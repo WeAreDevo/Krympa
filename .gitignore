@@ -66,3 +66,6 @@ lean/.lake/
 
 /python/scan.py
 /python/rerun.py
+
+# === Python ===
+.venv/

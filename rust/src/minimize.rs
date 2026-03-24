@@ -37,7 +37,7 @@ fn is_big_step_lemma(name: &str) -> bool {
 }
 
 fn is_abstracted_lemma(name: &str) -> bool {
-    name.starts_with("abstracted_lemma_")
+    name.starts_with("abstracted_lemma_") || name.starts_with("abstracted_stitch_")
 }
 
 struct ActiveRootGuard<'a> {
@@ -1305,17 +1305,23 @@ pub fn proof_uses_lemma(lemma_any_variant: &str, segments: &[&str]) -> bool {
         format!("lemma_{}", num),
     ];
 
-    // build alternation safely
+    // build alternation safely (escaped literals)
     let alts = variants
         .iter()
         .map(|n| regex::escape(n))
         .collect::<Vec<_>>()
         .join("|");
 
+    // stitch variant: abstracted_stitch_<digits|combined>_lemma_<num>
+    let stitch_alt = format!(r"abstracted_stitch_(?:\d+|combined)_lemma_{}", num);
+
+    // Combined alternation: literal variants OR stitch pattern
+    let full_alts = format!("{}|{}", alts, stitch_alt);
+
     // 1) Present as an axiom: "Axiom 1 (single_lemma_0025): ..."
     let axiom_re = Regex::new(&format!(
         r"(?m)^\s*Axiom\s+\d+\s*\(\s*(?:{})\s*\)\s*:",
-        alts
+        full_alts
     ))
     .unwrap();
 
@@ -1325,7 +1331,7 @@ pub fn proof_uses_lemma(lemma_any_variant: &str, segments: &[&str]) -> bool {
     //   "| deps: lemma_0003: <formula>, ..."
     let deps_re = Regex::new(&format!(
         r"(?mi)\|\s*deps\s*:\s*[^|\n]*\b(?:{})\b(?:\s*:)?",
-        alts
+        full_alts
     ))
     .unwrap();
 
@@ -1335,7 +1341,7 @@ pub fn proof_uses_lemma(lemma_any_variant: &str, segments: &[&str]) -> bool {
     //   "= { by lemma 5 (history_lemma_0061) R->L }"
     let cite_re = Regex::new(&format!(
         r"(?mi)\bby\s+(?:axiom|lemma)\s+\d+\s*\(\s*(?:{})\s*\)",
-        alts
+        full_alts
     ))
     .unwrap();
 

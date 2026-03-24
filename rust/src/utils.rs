@@ -312,6 +312,15 @@ pub fn load_lemma(lemmas_dir: &str, lemma_name: &str) -> Result<String, String> 
         vec![("small-step".to_string(), lemma_name.to_string())]
     } else if lemma_name.starts_with("abstracted_lemma_") {
         vec![("abstracted".to_string(), lemma_name.to_string())]
+    } else if lemma_name.starts_with("abstracted_stitch_") {
+        // e.g. "abstracted_stitch_0_lemma_0001"        -> subdir "abstracted_stitch_0"
+        //      "abstracted_stitch_combined_lemma_0001" -> subdir "abstracted_stitch_combined"
+        let re = Regex::new(r"^(abstracted_stitch_(?:\d+|combined))_lemma_\d+$").unwrap();
+        if let Some(caps) = re.captures(&lemma_name) {
+            vec![(caps[1].to_string(), lemma_name.to_string())]
+        } else {
+            return Err(format!("[ERROR] Invalid stitch lemma name: {}", lemma_name));
+        }
     } else if lemma_name.starts_with("lemma_") {
         vec![(
             "big-step".to_string(),
@@ -342,11 +351,17 @@ pub fn load_lemma(lemmas_dir: &str, lemma_name: &str) -> Result<String, String> 
         .to_str()
         .ok_or_else(|| format!("[ERROR] Failed to convert path to string: {:?}", file_path))?;
 
-    // determine internal TPTP name
-    let internal_name = file_lemma_name
-        .replace("big_step_lemma_", "conjecture_")
-        .replace("small_step_lemma_", "conjecture_")
-        .replace("abstracted_lemma_", "conjecture_");
+    // determine internal TPTP name (the name used inside the .p file)
+    let internal_name = if file_lemma_name.starts_with("abstracted_stitch_") {
+        // e.g. "abstracted_stitch_0_lemma_0001" -> "conjecture_0001" (last 4 digits)
+        let suffix = &file_lemma_name[file_lemma_name.len().saturating_sub(4)..];
+        format!("conjecture_{}", suffix)
+    } else {
+        file_lemma_name
+            .replace("big_step_lemma_", "conjecture_")
+            .replace("small_step_lemma_", "conjecture_")
+            .replace("abstracted_lemma_", "conjecture_")
+    };
 
     // extract formula body
     extract_tptp_formula_body(file_path_str, &internal_name)

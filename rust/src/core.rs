@@ -50,6 +50,11 @@ pub fn collect(input_file: &str, proof_file: &str, suffix: String) {
         }
     }
 
+    // run Stitch to generate abstracted_stitch_N/ variants
+    let stitch_files = run_stitch_script(proof_file, &lemmas_dir);
+    crate::klog_info!("[INFO] Stitch generated {} lemma file(s).", stitch_files.len());
+    all_lemma_files.extend(stitch_files);
+
     // run provers on all lemma files
     let provers = ["vampire", "twee"];
     let results = prove_lemmas(&all_lemma_files, &provers, "../proofs");
@@ -97,7 +102,7 @@ pub fn shorten_proofs(summary_file: &str) {
     let mut abstract_map: HashMap<u32, String> = HashMap::new();
     for (&n, (mode, _, _)) in &summary_data {
         if mode.starts_with("abstracted") {
-            let lemma_name = format!("abstracted_lemma_{:04}", n);
+            let lemma_name = mode.clone();
             let formula = match load_lemma(&lemmas_dir, &lemma_name) {
                 Ok(f) => f,
                 Err(err) => {
@@ -296,6 +301,63 @@ fn run_ocaml_parser(proof_file: &str, mode: &str) -> Result<(), String> {
     }
     crate::klog_debug!("{}", String::from_utf8_lossy(&output.stdout));
     Ok(())
+}
+
+/// Run the Stitch Python script to generate abstracted_stitch_*/ lemma files.
+/// Returns a list of all generated .p file paths.
+fn run_stitch_script(_proof_file: &str, lemmas_dir: &str) -> Vec<String> {
+    let script_path = "../python/run_stitch.py";
+    let big_step_dir = format!("{}/big-step", lemmas_dir);
+
+    let output = std::process::Command::new("python3")
+        .arg(script_path)
+        .arg(&big_step_dir)
+        .arg(lemmas_dir)
+        .output();
+
+    match output {
+        Ok(out) => {
+            crate::klog_debug!("[DEBUG] Stitch stderr: {}", String::from_utf8_lossy(&out.stderr));
+            if !out.status.success() {
+                crate::klog_warn!(
+                    "[WARN] Stitch script exited with error: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+        Err(e) => {
+            crate::klog_warn!("[WARN] Failed to run Stitch script: {}", e);
+            return Vec::new();
+        }
+    }
+
+    // Scan for abstracted_stitch_* directories and collect .p files
+    let mut stitch_files = Vec::new();
+    let entries = match fs::read_dir(lemmas_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        if !name.starts_with("abstracted_stitch_") {
+            continue;
+        }
+        if let Ok(dir_entries) = fs::read_dir(&path) {
+            for file_entry in dir_entries.flatten() {
+                let file_path = file_entry.path();
+                if file_path.extension().map(|e| e == "p").unwrap_or(false) {
+                    stitch_files.push(file_path.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
+    stitch_files.sort();
+    stitch_files
 }
 
 fn normalize_axiom(s: &str) -> String {
