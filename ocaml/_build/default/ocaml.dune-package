@@ -1,0 +1,53 @@
+(lang dune 3.22)
+(name ocaml)
+(sections (lib .) (libexec .) (bin ../../bin))
+(files
+ (lib
+  (META
+   dune-package
+   lemma_extractor.ml
+   ocaml.a
+   ocaml.cma
+   ocaml.cmi
+   ocaml.cmt
+   ocaml.cmx
+   ocaml.cmxa
+   ocaml.ml
+   ocaml__Lemma_extractor.cmi
+   ocaml__Lemma_extractor.cmt
+   ocaml__Lemma_extractor.cmx
+   ocaml__Tptp_parser.cmi
+   ocaml__Tptp_parser.cmt
+   ocaml__Tptp_parser.cmx
+   opam
+   tptp_parser.ml))
+ (libexec (ocaml.cmxs))
+ (bin (ocaml)))
+(library
+ (name ocaml)
+ (kind normal)
+ (archives (byte ocaml.cma) (native ocaml.cmxa))
+ (plugins (byte ocaml.cma) (native ocaml.cmxs))
+ (native_archives ocaml.a)
+ (requires str unix)
+ (main_module_name Ocaml)
+ (modes byte native)
+ (modules
+  (wrapped
+   (group
+    (alias
+     (obj_name ocaml)
+     (visibility public)
+     (kind alias)
+     (source (path Ocaml) (impl (path ocaml.ml-gen))))
+    (name Ocaml)
+    (modules
+     (module
+      (obj_name ocaml__Lemma_extractor)
+      (visibility public)
+      (source (path Lemma_extractor) (impl (path lemma_extractor.ml))))
+     (module
+      (obj_name ocaml__Tptp_parser)
+      (visibility public)
+      (source (path Tptp_parser) (impl (path tptp_parser.ml))))))
+   (wrapped true))))

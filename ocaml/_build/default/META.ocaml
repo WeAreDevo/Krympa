@@ -1,0 +1,6 @@
+description = ""
+requires = "str unix"
+archive(byte) = "ocaml.cma"
+archive(native) = "ocaml.cmxa"
+plugin(byte) = "ocaml.cma"
+plugin(native) = "ocaml.cmxs"

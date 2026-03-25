@@ -1,5 +1,0 @@
-Building OCaml project in ../ocaml
-Looking for OCaml executable at: ../ocaml/_build/default/bin/main.exe
-Destination directory: ../rust/ocaml_install
-Removing existing executable at ../rust/ocaml_install/tptp_parser
-cargo:rerun-if-changed=../ocaml/lib
