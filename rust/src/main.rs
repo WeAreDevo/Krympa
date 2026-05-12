@@ -1,22 +1,40 @@
+use krympa::execution::{parse_execution_mode_args, set_execution_mode};
 use krympa::utils::extract_suffix;
 use krympa::{core, minimize, run_vamp};
 use std::env;
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 2 {
-        krympa::klog_error!(
-            "Usage: cargo run -- [collect|shorten|group|minimize|run_vampire] <input_file>"
-        );
-        krympa::klog_error!("Usage for benchmarking: cargo run -- benchmarking");
+    let raw_args: Vec<String> = env::args().skip(1).collect();
+    let (mode, args) = match parse_execution_mode_args(&raw_args) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            krympa::klog_error!("{}", err);
+            return;
+        }
+    };
+
+    if let Err(err) = set_execution_mode(mode) {
+        krympa::klog_error!("{}", err);
         return;
     }
-    match args[1].as_str() {
+
+    if args.is_empty() {
+        krympa::klog_error!(
+            "Usage: cargo run -- [--parallel|--sequential] [collect|shorten|group|minimize|run_vampire] <input_file>"
+        );
+        krympa::klog_error!(
+            "Usage for benchmarking: cargo run --bin benchmarking -- [--parallel|--sequential] <input_folder> <timeout_secs> [krympa_binary]"
+        );
+        return;
+    }
+    krympa::klog_info!("[INFO] Execution mode: {}", mode.as_str());
+
+    match args[0].as_str() {
         "collect" => {
-            if args.len() < 3 {
+            if args.len() < 2 {
                 krympa::klog_error!("Usage: cargo run -- collect <input_file>");
             } else {
-                let input_file = &args[2];
+                let input_file = &args[1];
                 // extract suffix from input file
                 let suffix = extract_suffix(input_file);
                 let output_file = format!("../output/vampire_proof_{}.out", suffix);
@@ -24,10 +42,10 @@ fn main() {
             }
         }
         "shorten" => {
-            if args.len() < 3 {
+            if args.len() < 2 {
                 krympa::klog_error!("Usage: cargo run -- collect <input_file>");
             } else {
-                let input_file = &args[2];
+                let input_file = &args[1];
                 // extract suffix from input file
                 let suffix = extract_suffix(input_file);
                 let summary_file = format!("../output/summary_{}.json", suffix);
@@ -35,10 +53,10 @@ fn main() {
             }
         }
         "group" => {
-            if args.len() < 3 {
+            if args.len() < 2 {
                 krympa::klog_error!("Usage: cargo run -- collect <input_file>");
             } else {
-                let input_file = &args[2];
+                let input_file = &args[1];
                 // extract suffix from input file
                 let suffix = extract_suffix(input_file);
                 let summary_file = format!("../output/summary_{}.json", suffix);
@@ -46,10 +64,10 @@ fn main() {
             }
         }
         "minimize" => {
-            if args.len() < 3 {
+            if args.len() < 2 {
                 krympa::klog_error!("Usage: cargo run -- minimize <input_file>");
             } else {
-                let input_file = &args[2];
+                let input_file = &args[1];
 
                 // extract suffix from input file
                 let suffix = extract_suffix(input_file);
@@ -66,10 +84,10 @@ fn main() {
             }
         }
         "run_vampire" => {
-            if args.len() < 3 {
+            if args.len() < 2 {
                 krympa::klog_error!("Usage: cargo run -- run_vampire <input_file>");
             } else {
-                let input_file = &args[2];
+                let input_file = &args[1];
                 // extract suffix from input file
                 let suffix = extract_suffix(input_file);
                 let output_file = format!("../output/vampire_proof_{}.out", suffix);
@@ -79,7 +97,7 @@ fn main() {
         }
         _ => krympa::klog_error!(
             "Unknown command '{}'. Use 'collect', 'shorten', 'group', or 'minimize'",
-            args[1]
+            args[0]
         ),
     }
 }

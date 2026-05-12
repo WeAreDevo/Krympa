@@ -50,6 +50,12 @@ All execution is performed from the `shell` directory:
 cd shell
 ```
 
+Developer-oriented setup and run instructions are in:
+
+```bash
+DEVELOPING.md
+```
+
 ---
 
 ## Run the Full Benchmark Suite
@@ -69,8 +75,8 @@ This runs the benchmarking pipeline on the full benchmark set.
 Each `Proofs*.lean` file is converted into a corresponding benchmark folder
 (e.g. `benchmarks/input7/`), which contains multiple individual benchmark
 problems. The timeout is applied **to each individual benchmark problem**, not
-to the entire folder or the full benchmark suite. Problems are processed
-sequentially.
+to the entire folder or the full benchmark suite. Krympa supports both parallel
+and sequential execution modes; see `DEVELOPING.md` for the exact commands.
 
 The console output shows only high-level progress information. Detailed logs for
 each benchmark folder are written to:

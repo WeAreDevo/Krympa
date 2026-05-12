@@ -1,3 +1,4 @@
+use crate::execution::ExecutionMode;
 use crate::prover_wrapper::proof_length;
 use std::fs;
 use std::io::Read;
@@ -17,7 +18,7 @@ pub struct BenchmarkResult {
 /// `input_folder`: folder with input files
 /// `krympa_bin`: path to prebuilt krympa binary
 /// `timeout_secs`: per-command timeout (seconds)
-pub fn run(input_folder: &str, krympa_bin: &str, timeout_secs: u64) {
+pub fn run(input_folder: &str, krympa_bin: &str, timeout_secs: u64, execution_mode: ExecutionMode) {
     let input_dir = Path::new(input_folder);
     if !input_dir.is_dir() {
         crate::klog_error!(
@@ -45,6 +46,7 @@ pub fn run(input_folder: &str, krympa_bin: &str, timeout_secs: u64) {
     crate::klog_info!("Starting benchmarking in folder: {}", input_dir.display());
     crate::klog_info!("Output folder: {}", output_dir.display());
     crate::klog_info!("Per-command timeout: {} seconds", timeout_secs);
+    crate::klog_info!("Execution mode: {}", execution_mode.as_str());
 
     'file_loop: for input_file in input_files {
         let input_str = input_file.to_string_lossy().to_string();
@@ -57,7 +59,7 @@ pub fn run(input_folder: &str, krympa_bin: &str, timeout_secs: u64) {
             crate::klog_debug!("Running '{} {}' ...", cmd, input_str);
 
             let mut child = match Command::new(krympa_bin)
-                .args([cmd, input_str.as_str()])
+                .args([execution_mode.cli_flag(), cmd, input_str.as_str()])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()

@@ -1,3 +1,4 @@
+use crate::execution::{execution_mode, ExecutionMode};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::env;
@@ -167,101 +168,113 @@ pub fn prove_lemmas(
     let mut sorted_nums: Vec<u32> = groups.keys().cloned().collect();
     sorted_nums.sort();
 
-    // PARALLEL: each lemma index `n` runs on its own rayon worker thread
-    sorted_nums
-        .par_iter()
-        .filter_map(|&n| {
-            crate::klog_debug!("[DEBUG] Proving lemma {}", n);
-            crate::klog_debug!(
-                "[DEBUG] lemma {} running on thread {:?}",
-                n,
-                std::thread::current().id()
-            );
+    let mode = execution_mode();
+    crate::klog_info!(
+        "[INFO] Proving {} lemma groups in {} mode.",
+        sorted_nums.len(),
+        mode.as_str()
+    );
 
-            let files = &groups[&n];
+    match mode {
+        ExecutionMode::Parallel => sorted_nums
+            .par_iter()
+            .filter_map(|&n| {
+                prove_lemma_group(n, &groups[&n], provers, &vampire_dir, &twee_dir, out_dir)
+            })
+            .collect(),
+        ExecutionMode::Sequential => sorted_nums
+            .iter()
+            .filter_map(|&n| {
+                prove_lemma_group(n, &groups[&n], provers, &vampire_dir, &twee_dir, out_dir)
+            })
+            .collect(),
+    }
+}
 
-            // collect all successful proofs for this group
-            let mut all_proofs: Vec<(String, String, usize, String)> = Vec::new(); // (prover, proof, len, filename)
+fn prove_lemma_group(
+    n: u32,
+    files: &[String],
+    provers: &[&str],
+    vampire_dir: &Path,
+    twee_dir: &Path,
+    out_dir: &Path,
+) -> Option<(u32, (String, String, String))> {
+    crate::klog_debug!("[DEBUG] Proving lemma {}", n);
+    crate::klog_debug!(
+        "[DEBUG] lemma {} running on thread {:?}",
+        n,
+        std::thread::current().id()
+    );
 
-            for lemma_file in files {
-                let file_stem = Path::new(lemma_file).file_stem().unwrap().to_string_lossy();
-                let vampire_file = vampire_dir.join(format!("{}_vampire.proof", file_stem));
-                let twee_file = twee_dir.join(format!("{}_twee.proof", file_stem));
+    // collect all successful proofs for this group
+    let mut all_proofs: Vec<(String, String, usize, String)> = Vec::new(); // (prover, proof, len, filename)
 
-                for (prover, proof) in try_provers(lemma_file, provers, &vampire_file, &twee_file) {
-                    let szs_status = proof
-                        .lines()
-                        .find(|l| l.contains("RESULT:") || l.contains("SZS status"))
-                        .unwrap_or("")
-                        .to_lowercase(); // normalize to lowercase
+    for lemma_file in files {
+        let file_stem = Path::new(lemma_file).file_stem().unwrap().to_string_lossy();
+        let vampire_file = vampire_dir.join(format!("{}_vampire.proof", file_stem));
+        let twee_file = twee_dir.join(format!("{}_twee.proof", file_stem));
 
-                    let len = if szs_status.contains("countersatisfiable")
-                        || szs_status.contains("counter-satisfiable")
-                        || szs_status.contains("counter_satisfiable")
-                        || (szs_status.contains("satisfiable")
-                            && !szs_status.contains("unsatisfiable"))
-                        || szs_status.contains("unknown")
-                    {
-                        1000 // sentinel for non-theorem / countersat / unknown
-                             // TODO we can use them. But for now we just want shortest
-                             // theorem proofs. Later we can see how we prove the
-                             // conjecture from the satisfiable ones.
-                    } else {
-                        proof_length(&prover, &proof)
-                    };
+        for (prover, proof) in try_provers(lemma_file, provers, &vampire_file, &twee_file) {
+            let szs_status = proof
+                .lines()
+                .find(|l| l.contains("RESULT:") || l.contains("SZS status"))
+                .unwrap_or("")
+                .to_lowercase();
 
-                    //let len = proof_length(&prover, &proof);
-                    crate::klog_debug!("[DEBUG] {} proof length: {} lines", prover, len);
-                    all_proofs.push((prover, proof, len, file_stem.to_string()));
-                }
-            }
-
-            // pick the shortest proof across all modes and provers
-            if let Some((best_prover, best_proof, best_len, best_file)) =
-                all_proofs.into_iter().min_by(|a, b| {
-                    // compare lengths first
-                    if a.2 != b.2 {
-                        a.2.cmp(&b.2)
-                    } else {
-                        // Tie-breaker: prefer "twee" over "vampire" over others
-                        let order = |p: &String| {
-                            if p == "twee" {
-                                0
-                            } else if p == "vampire" {
-                                1
-                            } else {
-                                2
-                            }
-                        };
-                        order(&a.0).cmp(&order(&b.0))
-                    }
-                })
+            let len = if szs_status.contains("countersatisfiable")
+                || szs_status.contains("counter-satisfiable")
+                || szs_status.contains("counter_satisfiable")
+                || (szs_status.contains("satisfiable") && !szs_status.contains("unsatisfiable"))
+                || szs_status.contains("unknown")
             {
-                let final_path = out_dir.join(format!("{}_{}.proof", best_file, best_prover));
-                if let Err(e) = fs::write(&final_path, &best_proof) {
-                    crate::klog_error!("[ERROR] Failed to save shortest proof: {}", e);
-                } else {
-                    crate::klog_debug!(
-                        "[DEBUG] Saved shortest proof to '{}'",
-                        final_path.display()
-                    );
-                }
-
-                crate::klog_debug!(
-                    "[DEBUG] Shortest proof for lemma {} found in '{}' by '{}' with {} lines",
-                    n,
-                    best_file,
-                    best_prover,
-                    best_len
-                );
-
-                Some((n, (best_file, best_prover, best_proof)))
+                1000
             } else {
-                crate::klog_warn!("[WARN] No successful proof for group {}", n);
-                None
+                proof_length(&prover, &proof)
+            };
+
+            crate::klog_debug!("[DEBUG] {} proof length: {} lines", prover, len);
+            all_proofs.push((prover, proof, len, file_stem.to_string()));
+        }
+    }
+
+    if let Some((best_prover, best_proof, best_len, best_file)) =
+        all_proofs.into_iter().min_by(|a, b| {
+            if a.2 != b.2 {
+                a.2.cmp(&b.2)
+            } else {
+                let order = |p: &String| {
+                    if p == "twee" {
+                        0
+                    } else if p == "vampire" {
+                        1
+                    } else {
+                        2
+                    }
+                };
+                order(&a.0).cmp(&order(&b.0))
             }
         })
-        .collect()
+    {
+        let final_path = out_dir.join(format!("{}_{}.proof", best_file, best_prover));
+        if let Err(e) = fs::write(&final_path, &best_proof) {
+            crate::klog_error!("[ERROR] Failed to save shortest proof: {}", e);
+        } else {
+            crate::klog_debug!("[DEBUG] Saved shortest proof to '{}'", final_path.display());
+        }
+
+        crate::klog_debug!(
+            "[DEBUG] Shortest proof for lemma {} found in '{}' by '{}' with {} lines",
+            n,
+            best_file,
+            best_prover,
+            best_len
+        );
+
+        Some((n, (best_file, best_prover, best_proof)))
+    } else {
+        crate::klog_warn!("[WARN] No successful proof for group {}", n);
+        None
+    }
 }
 
 fn try_provers(

@@ -1,8 +1,34 @@
 #!/usr/bin/env bash
 set -e
 
+MODE_FLAG="${KRYMPA_EXECUTION_MODE:---parallel}"
+if [ $# -ge 1 ]; then
+  case "$1" in
+    --parallel|--sequential)
+      MODE_FLAG="$1"
+      shift
+      ;;
+    --execution-mode)
+      if [ $# -lt 2 ]; then
+        echo "Usage: $0 [--parallel|--sequential] <input-file> [krympa-binary]"
+        exit 1
+      fi
+      MODE_FLAG="--$2"
+      shift 2
+      ;;
+    --execution-mode=parallel)
+      MODE_FLAG="--parallel"
+      shift
+      ;;
+    --execution-mode=sequential)
+      MODE_FLAG="--sequential"
+      shift
+      ;;
+  esac
+fi
+
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
-  echo "Usage: $0 <input-file> [krympa-binary]"
+  echo "Usage: $0 [--parallel|--sequential] <input-file> [krympa-binary]"
   exit 1
 fi
 
@@ -19,7 +45,7 @@ if [ ! -x "$KRYMPA_BINARY" ]; then
   exit 1
 fi
 
-"$KRYMPA_BINARY" run_vampire "$INPUT"
-"$KRYMPA_BINARY" collect "$INPUT"
-"$KRYMPA_BINARY" shorten "$INPUT"
-"$KRYMPA_BINARY" minimize "$INPUT"
+"$KRYMPA_BINARY" "$MODE_FLAG" run_vampire "$INPUT"
+"$KRYMPA_BINARY" "$MODE_FLAG" collect "$INPUT"
+"$KRYMPA_BINARY" "$MODE_FLAG" shorten "$INPUT"
+"$KRYMPA_BINARY" "$MODE_FLAG" minimize "$INPUT"

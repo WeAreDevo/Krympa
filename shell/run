@@ -11,6 +11,7 @@ KRYMPA_BINARY_DEFAULT="./krympa"
 # defaults
 TIMEOUT_SECS=2700
 KRYMPA_BINARY="$KRYMPA_BINARY_DEFAULT"
+EXECUTION_MODE_FLAG="${KRYMPA_EXECUTION_MODE:---parallel}"
 
 # argument parsing
 if [ $# -ge 1 ]; then
@@ -38,6 +39,7 @@ echo "======================================"
 echo "Krympa benchmark run starting"
 echo "Timeout per benchmark : ${TIMEOUT_SECS}s"
 echo "Krympa binary         : ${KRYMPA_BINARY}"
+echo "Execution mode        : ${EXECUTION_MODE_FLAG#--}"
 echo "Logs directory        : ${BENCHMARK_DIR}/output_logs"
 echo "======================================"
 echo
@@ -61,7 +63,7 @@ run_one() {
     echo "Running benchmarking for $base (timeout=${TIMEOUT_SECS}s)..."
 
     cd "$RUST_DIR" || exit 1
-    "$BENCHMARK_BINARY" "$input_folder" "$TIMEOUT_SECS" "$KRYMPA_BINARY" > "$log_file" 2>&1
+    "$BENCHMARK_BINARY" "$input_folder" "$TIMEOUT_SECS" "$KRYMPA_BINARY" "$EXECUTION_MODE_FLAG" > "$log_file" 2>&1
     cd "$ORIG_DIR" || exit 1
 
     echo "Finished benchmarking for $base"
