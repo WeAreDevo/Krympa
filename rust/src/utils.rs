@@ -62,12 +62,28 @@ pub fn precompute_lemmas(
             .trim_end_matches("_vampire")
             .to_string();
 
-        // path to TWEE version
+        // path to TWEE version — use empty deps for lemmas proved only by Vampire
         let new_path = Path::new(twee_proofs_dir).join(format!("{}_twee.proof", lemma_name));
-        let proof_content = fs::read_to_string(&new_path).map_err(|e| e.to_string())?;
+        let proof_content = match fs::read_to_string(&new_path) {
+            Ok(c) => c,
+            Err(_) => {
+                crate::klog_debug!(
+                    "[DEBUG] precompute_lemmas: no twee proof for {} — recording with empty deps",
+                    lemma_name
+                );
+                // Still register the lemma so DAG traversal can find it
+                let formula = match load_lemma(lemmas_dir, &lemma_name) {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+                all_lemmas.insert(lemma_name.clone(), LemmaInfo { formula, dependencies: Vec::new() });
+                continue;
+            }
+        };
 
         // extract dependencies
-        let extracted = parse_used_lemmas(&proof_content, lemmas_dir, proofs_dir)?; // Vec<(name, formula)>
+        let extracted = parse_used_lemmas(&proof_content, lemmas_dir, proofs_dir)
+            .map_err(|e| format!("parse_used_lemmas failed for {}: {}", lemma_name, e))?;
         let extracted_twee = extract_twee_lemmas(&proof_content); // Vec<(name, formula)>
 
         let mut dependencies: Vec<(String, String)> = Vec::new();
@@ -104,7 +120,8 @@ pub fn precompute_lemmas(
             dependencies.push((canonical_name, twee_formula));
         }
 
-        let formula = load_lemma(lemmas_dir, &lemma_name)?;
+        let formula = load_lemma(lemmas_dir, &lemma_name)
+            .map_err(|e| format!("load_lemma failed for {}: {}", lemma_name, e))?;
         all_lemmas.insert(
             lemma_name.clone(),
             LemmaInfo {
@@ -312,15 +329,9 @@ pub fn load_lemma(lemmas_dir: &str, lemma_name: &str) -> Result<String, String> 
         vec![("small-step".to_string(), lemma_name.to_string())]
     } else if lemma_name.starts_with("abstracted_lemma_") {
         vec![("abstracted".to_string(), lemma_name.to_string())]
-    } else if lemma_name.starts_with("abstracted_stitch_") {
-        // e.g. "abstracted_stitch_0_lemma_0001"        -> subdir "abstracted_stitch_0"
-        //      "abstracted_stitch_combined_lemma_0001" -> subdir "abstracted_stitch_combined"
-        let re = Regex::new(r"^(abstracted_stitch_(?:\d+|combined))_lemma_\d+$").unwrap();
-        if let Some(caps) = re.captures(&lemma_name) {
-            vec![(caps[1].to_string(), lemma_name.to_string())]
-        } else {
-            return Err(format!("[ERROR] Invalid stitch lemma name: {}", lemma_name));
-        }
+    } else if lemma_name.starts_with("abstracted_stitch_lemma_") {
+        // e.g. "abstracted_stitch_lemma_0001" -> subdir "abstracted_stitch"
+        vec![("abstracted_stitch".to_string(), lemma_name.to_string())]
     } else if lemma_name.starts_with("lemma_") {
         vec![(
             "big-step".to_string(),

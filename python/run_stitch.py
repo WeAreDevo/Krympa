@@ -610,13 +610,93 @@ def extract_pattern_tree(fo_abstraction: str):
 # Main
 # ============================================================
 
+def abstract_single_lemma(content: str, max_arity: int, iterations: int):
+    """
+    Run Stitch on the subterms of a single lemma's conjecture body.
+
+    Returns (new_content, pattern_str) if a useful abstraction is found,
+    or None if no ≥2-occurrence pattern exists within this lemma.
+    """
+    parsed = parse_conjecture_block(content)
+    if parsed is None:
+        return None
+    tptp_name, orig_vars, body = parsed
+
+    sides = [side.strip() for side in split_top_level_eq(body) if side.strip()]
+    if len(sides) != 2:
+        return None
+    lhs, rhs = sides
+
+    # Collect immediate subterms (direct children of each side's top-level symbol),
+    # excluding any term string-equal to the full LHS or RHS.
+    # This prevents Stitch from abstracting a whole side to Y0
+    # (which produces unprovable fixed-point statements like Y0 = t(Y0, ...)).
+    # Stitch inspects deeper structure itself during abstraction.
+    excluded = {lhs, rhs}
+    terms = []
+    for side in sides:
+        try:
+            tree = parse_fof_term(side)
+        except Exception:
+            continue
+        if isinstance(tree, str):
+            continue
+        for child in tree[1:]:
+            child_fof = to_fof(child)
+            if '(' in child_fof and child_fof not in excluded:
+                terms.append(child_fof)
+    terms = list(dict.fromkeys(terms))
+
+    if not terms:
+        return None
+
+    # Build variable renaming (Xn -> single letters) scoped to this lemma
+    fwd, rev = build_xn_mapping(terms)
+    renamed = list(dict.fromkeys(rename_xn_to_letters(t, fwd) for t in terms if '(' in t))
+    if not renamed:
+        return None
+
+    arities = derive_arities(renamed)
+
+    try:
+        lambda_terms = [fof_to_lambda(t) for t in renamed]
+        result = compress(lambda_terms, iterations=iterations, max_arity=max_arity)
+    except Exception:
+        return None
+
+    for abstraction in result.abstractions:
+        try:
+            fo_abs = fo_abstraction_from(abstraction, arities)
+        except Exception:
+            continue
+
+        pattern_tree = extract_pattern_tree(fo_abs)
+        if pattern_tree is None:
+            continue
+
+        new_body = apply_pattern_to_formula(body, pattern_tree, fwd, rev)
+        if new_body is None:
+            continue
+
+        # Reject if a whole side collapsed to a bare variable (e.g. "Y0 = t(Y0,...)")
+        # — means the entire LHS or RHS was abstracted away, producing an unprovable
+        # fixed-point statement.
+        new_sides = split_top_level_eq(new_body)
+        if len(new_sides) == 2 and any('(' not in s.strip() for s in new_sides):
+            continue
+
+        new_vars = orig_vars + ['Y0'] if 'Y0' not in orig_vars else orig_vars
+        new_content = replace_conjecture_in_file(content, tptp_name, new_vars, new_body)
+        return new_content, to_fof(pattern_tree)
+
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='Run Stitch on big-step lemma terms and generate abstracted TPTP files')
+        description='Run per-lemma Stitch abstraction and generate abstracted TPTP files')
     parser.add_argument('big_step_dir', help='Directory containing big-step lemma .p files')
-    parser.add_argument('output_dir', help='Parent directory for abstracted_stitch_*/ subdirs')
-    parser.add_argument('--k', type=int, default=5,
-                        help='Max number of Stitch abstractions to use (default: 5)')
+    parser.add_argument('output_dir', help='Parent directory for abstracted_stitch/ subdir')
     parser.add_argument('--max-arity', type=int, default=3,
                         help='Max arity for Stitch (default: 3)')
     parser.add_argument('--iterations', type=int, default=3,
@@ -630,123 +710,20 @@ def main():
         print(f"[WARN] Big-step directory not found: {big_step_dir}", file=sys.stderr)
         sys.exit(0)
 
-    # --- Extract corpus from lemma conjecture bodies ---
-    terms = extract_terms_from_lemmas(str(big_step_dir))
-    if not terms:
-        print("[WARN] No terms extracted from lemma files. Skipping Stitch.", file=sys.stderr)
-        sys.exit(0)
-
-    # Build Xn <-> single-letter variable mapping
-    fwd, rev = build_xn_mapping(terms)
-
-    # Rename and keep only compound terms
-    renamed_terms = [rename_xn_to_letters(t, fwd) for t in terms]
-    renamed_terms = list(dict.fromkeys(t for t in renamed_terms if '(' in t))
-
-    if not renamed_terms:
-        print("[WARN] No compound terms found. Skipping Stitch.", file=sys.stderr)
-        sys.exit(0)
-
-    print(f"[INFO] Extracted {len(renamed_terms)} unique compound terms from lemmas.",
-          file=sys.stderr)
-
-    arities = derive_arities(renamed_terms)
-
-    try:
-        lambda_terms = [fof_to_lambda(t) for t in renamed_terms]
-    except Exception as e:
-        print(f"[ERROR] Lambda embedding failed: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    # --- Run Stitch ---
-    try:
-        result = compress(lambda_terms, iterations=args.iterations,
-                          max_arity=args.max_arity)
-    except Exception as e:
-        print(f"[ERROR] Stitch compression failed: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    abstractions = result.abstractions
-    print(f"[INFO] Stitch found {len(abstractions)} abstraction(s).", file=sys.stderr)
-
-    # --- Convert abstractions to FOF patterns ---
-    patterns = []  # list of (abs_idx, pattern_tree)
-    for i, abstraction in enumerate(abstractions[:args.k]):
-        try:
-            fo_abs = fo_abstraction_from(abstraction, arities)
-        except Exception as e:
-            print(f"[INFO] Abstraction {i}: conversion failed ({e}), skipping.",
-                  file=sys.stderr)
-            continue
-
-        print(f"[INFO] Abstraction {i}: {fo_abs}", file=sys.stderr)
-
-        pattern_tree = extract_pattern_tree(fo_abs)
-        if pattern_tree is None:
-            print(f"[INFO]   -> Skipping (higher-order or trivial).", file=sys.stderr)
-            continue
-
-        patterns.append((i, pattern_tree))
-
-    if not patterns:
-        print("[WARN] No usable abstraction patterns found.", file=sys.stderr)
-        sys.exit(0)
-
-    # --- Collect big-step lemma files ---
     big_step_files = sorted(big_step_dir.glob("big_step_lemma_*.p"))
     if not big_step_files:
         print(f"[WARN] No big-step lemma files in {big_step_dir}", file=sys.stderr)
         sys.exit(0)
 
-    # --- Per-pattern directories: one pattern applied, ≥2 occurrences required ---
-    for abs_idx, pattern_tree in patterns:
-        mode_name = f"abstracted_stitch_{abs_idx}"
-        mode_dir = output_dir / mode_name
-        mode_dir.mkdir(parents=True, exist_ok=True)
+    mode_name = "abstracted_stitch"
+    mode_dir = output_dir / mode_name
+    import shutil
+    if mode_dir.exists():
+        shutil.rmtree(mode_dir)
+    mode_dir.mkdir(parents=True, exist_ok=True)
 
-        generated = 0
-        skipped = 0
-
-        for lemma_file in big_step_files:
-            m = re.search(r'big_step_lemma_(\d{4})\.p$', lemma_file.name)
-            if not m:
-                continue
-            lemma_num_str = m.group(1)
-
-            content = lemma_file.read_text()
-            parsed = parse_conjecture_block(content)
-            if parsed is None:
-                print(f"[WARN] Could not parse conjecture from {lemma_file.name}",
-                      file=sys.stderr)
-                continue
-
-            tptp_name, orig_vars, body = parsed
-
-            # replacement_var defaults to 'Y0'; require ≥2 occurrences
-            new_body = apply_pattern_to_formula(body, pattern_tree, fwd, rev)
-            if new_body is None:
-                skipped += 1
-                continue
-
-            new_vars = orig_vars + ['Y0'] if 'Y0' not in orig_vars else orig_vars
-            new_content = replace_conjecture_in_file(content, tptp_name, new_vars, new_body)
-
-            out_path = mode_dir / f"{mode_name}_lemma_{lemma_num_str}.p"
-            out_path.write_text(new_content)
-            generated += 1
-
-        print(f"[INFO] {mode_name}: generated {generated} file(s), "
-              f"skipped {skipped} (fewer than 2 occurrences).", file=sys.stderr)
-
-    # --- Combined directory: all applicable patterns applied simultaneously ---
-    # Each pattern gets its own variable Y<abs_idx>.  A lemma is included only
-    # if at least one pattern contributes ≥2 replacements.
-    combined_mode = "abstracted_stitch_combined"
-    combined_dir = output_dir / combined_mode
-    combined_dir.mkdir(parents=True, exist_ok=True)
-
-    combined_generated = 0
-    combined_skipped = 0
+    generated = 0
+    skipped = 0
 
     for lemma_file in big_step_files:
         m = re.search(r'big_step_lemma_(\d{4})\.p$', lemma_file.name)
@@ -755,69 +732,20 @@ def main():
         lemma_num_str = m.group(1)
 
         content = lemma_file.read_text()
-        parsed = parse_conjecture_block(content)
-        if parsed is None:
+        result = abstract_single_lemma(content, args.max_arity, args.iterations)
+
+        if result is None:
+            skipped += 1
             continue
 
-        tptp_name, orig_vars, body = parsed
+        new_content, pattern_str = result
+        out_name = f"abstracted_stitch_lemma_{lemma_num_str}.p"
+        (mode_dir / out_name).write_text(new_content)
+        print(f"[INFO] lemma_{lemma_num_str}: abstracted via {pattern_str}", file=sys.stderr)
+        generated += 1
 
-        # Work in letter-space so patterns compose without interference
-        current_body = rename_xn_to_letters(body, fwd)
-        new_vars = list(orig_vars)
-        applied_any = False
-
-        for abs_idx, pattern_tree in patterns:
-            var_name = f'Y{abs_idx}'
-            parts = split_top_level_eq(current_body)
-            if len(parts) != 2:
-                continue
-            try:
-                lhs_tree = parse_fof_term(parts[0])
-                rhs_tree = parse_fof_term(parts[1])
-            except Exception:
-                continue
-
-            # Same sound strategy as apply_pattern_to_formula: find the most
-            # frequent single concrete subterm matching the pattern (≥2 times),
-            # then replace only that specific subterm everywhere.
-            matched: list = []
-            collect_matching_subterms(lhs_tree, pattern_tree, matched)
-            collect_matching_subterms(rhs_tree, pattern_tree, matched)
-            if not matched:
-                continue
-
-            counts = Counter(matched)
-            target_fof_str, best_count = counts.most_common(1)[0]
-            if best_count < 2:
-                continue
-
-            new_lhs, _ = replace_literal_subterm(lhs_tree, target_fof_str, var_name)
-            new_rhs, _ = replace_literal_subterm(rhs_tree, target_fof_str, var_name)
-
-            new_lhs_str = to_fof(new_lhs)
-            new_rhs_str = to_fof(new_rhs)
-            if new_lhs_str != new_rhs_str:
-                current_body = f"{new_lhs_str} = {new_rhs_str}"
-                if var_name not in new_vars:
-                    new_vars.append(var_name)
-                applied_any = True
-
-        if not applied_any:
-            combined_skipped += 1
-            continue
-
-        # Rename letter-space variables back to Xn (Yi variables are unaffected)
-        final_body = rename_letters_to_xn(current_body, rev)
-        new_content = replace_conjecture_in_file(content, tptp_name, new_vars, final_body)
-
-        out_path = combined_dir / f"{combined_mode}_lemma_{lemma_num_str}.p"
-        out_path.write_text(new_content)
-        combined_generated += 1
-
-    print(f"[INFO] {combined_mode}: generated {combined_generated} file(s), "
-          f"skipped {combined_skipped} (no pattern matched ≥2 times).", file=sys.stderr)
-
-    print("[INFO] Stitch abstraction complete.", file=sys.stderr)
+    print(f"[INFO] abstracted_stitch: {generated} generated, {skipped} skipped.",
+          file=sys.stderr)
 
 
 if __name__ == '__main__':

@@ -1360,8 +1360,8 @@ pub fn proof_uses_lemma(lemma_any_variant: &str, segments: &[&str]) -> bool {
         .collect::<Vec<_>>()
         .join("|");
 
-    // stitch variant: abstracted_stitch_<digits|combined>_lemma_<num>
-    let stitch_alt = format!(r"abstracted_stitch_(?:\d+|combined)_lemma_{}", num);
+    // stitch variant: abstracted_stitch_lemma_<num>
+    let stitch_alt = format!(r"abstracted_stitch_lemma_{}", num);
 
     // Combined alternation: literal variants OR stitch pattern
     let full_alts = format!("{}|{}", alts, stitch_alt);

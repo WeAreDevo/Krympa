@@ -309,7 +309,14 @@ fn run_stitch_script(_proof_file: &str, lemmas_dir: &str) -> Vec<String> {
     let script_path = "../python/run_stitch.py";
     let big_step_dir = format!("{}/big-step", lemmas_dir);
 
-    let output = std::process::Command::new("python3")
+    // Prefer the repo's .venv python (which has stitch_core) over the system python3.
+    let python = if std::path::Path::new("../.venv/bin/python").exists() {
+        "../.venv/bin/python"
+    } else {
+        "python3"
+    };
+
+    let output = std::process::Command::new(python)
         .arg(script_path)
         .arg(&big_step_dir)
         .arg(lemmas_dir)
@@ -343,7 +350,7 @@ fn run_stitch_script(_proof_file: &str, lemmas_dir: &str) -> Vec<String> {
             continue;
         }
         let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if !name.starts_with("abstracted_stitch_") {
+        if !name.starts_with("abstracted_stitch") {
             continue;
         }
         if let Ok(dir_entries) = fs::read_dir(&path) {

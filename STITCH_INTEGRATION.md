@@ -2,131 +2,86 @@
 
 ## Overview
 
-This change integrates [Stitch](https://stitch-bindings.readthedocs.io/) into Krympa's `collect` phase to generate additional TPTP problem variants for each lemma. Alongside the existing `big-step`, `small-step`, and `abstracted` modes, Krympa now also produces `abstracted_stitch_N` and `abstracted_stitch_combined` variants driven by data-derived compression patterns discovered across the lemma corpus.
+This change integrates [Stitch](https://github.com/mlb2251/stitch) into Krympa's `collect` phase to generate a fourth lemma mode — **abstracted_stitch** — alongside the existing `big-step`, `small-step`, and `abstracted` modes. For each lemma, Stitch finds a structural pattern within that lemma's own conjecture body and replaces a repeated concrete subterm with a fresh universally-quantified variable, producing a logically weaker but more general statement. The resulting TPTP files are handed to the same Vampire + Twee pipeline as all other modes.
 
 ---
 
 ## Background: The Existing `abstracted` Mode
 
-The existing OCaml heuristic (`ocaml/lib/lemma_extractor.ml`) abstracts a lemma by:
+The OCaml heuristic (`ocaml/lib/lemma_extractor.ml`) abstracts a lemma by:
 
 1. Scanning the conjecture body for flat subterms of the form `op(Xi, Xj)` where both arguments are variables.
-2. Finding the one that appears **most frequently as the same literal string** (e.g., `op(X0, X1)` appearing at three positions in the formula).
-3. Replacing every occurrence of that exact string with a fresh universally-quantified variable `Y0`.
+2. Finding the one that appears **most frequently as the same literal string**.
+3. Replacing every occurrence with a fresh universally-quantified variable `Y0`.
 
-**Example.** The lemma `op(op(X0,X1), op(op(X0,X1), X2)) = op(X0,X1)` contains `op(X0,X1)` three times. The OCaml heuristic replaces all three with `Y0`, giving: `op(Y0, op(Y0, X2)) = Y0`.
+**Example.** `op(op(X0,X1), op(op(X0,X1), X2)) = op(X0,X1)` contains `op(X0,X1)` three times. After abstraction: `op(Y0, op(Y0, X2)) = Y0`.
+
+The `abstracted_stitch` mode generalises this by discovering richer patterns (arbitrary depth, not just flat `op(Xi,Xj)`) using Stitch compression.
 
 ---
 
-## Why the ≥2 Occurrence Requirement Is Semantically Necessary
+## Soundness: Why the ≥2 Occurrence Requirement Matters
 
-This is the central soundness condition — it is not just a heuristic filter.
-
-### What abstraction does logically
-
-When you replace a subterm `t` with a fresh variable `Y0`, the resulting formula is universally quantified over `Y0`. The original formula is then a *specific instance* of the abstracted one — obtained by substituting `Y0 := t`. This means:
+Replacing a subterm `t` with a fresh variable `Y0` universally quantifies the result over `Y0`. The original formula is then a *specific instance* — obtained by substituting `Y0 := t`. Therefore:
 
 > **Abstracted provable ⟹ Original provable** (by instantiation).
 
-So abstracting is always sound from an implication standpoint: if the prover proves the abstracted version, the original follows for free.
+Abstraction is only sound — and only useful — when the **same concrete subterm** appears at **≥ 2 positions**:
 
-### Why single-occurrence abstraction is useless
+- With a single occurrence, the abstracted statement is strictly stronger than the original and may be unprovable even when the original holds.
+- With ≥ 2 occurrences of the *same concrete string*, the prover can treat `Y0` as an atomic unit. The shared positions are tied together by one variable, enabling the prover to exploit structural uniformity without unfolding `Y0`'s definition — which is precisely the source of proof shortening.
 
-If `t` appears only once in the formula, the abstracted statement replaces that single occurrence with `Y0` and quantifies universally over it. The claim is now "for all `Y0`, [formula]", which is **strictly stronger** than the original. This may be false even when the original is true:
+**Binding-consistency requirement.** Multiple structurally-matching subterms are not sufficient; they must be the same concrete FOF string. Replacing two different concrete subterms with the same variable would introduce a new equality constraint between them not present in the original, potentially making the abstracted statement false.
 
-```
-Original:  op(X0, X1) = X0          (maybe true for specific X0, X1 in this algebra)
-Abstracted: Y0 = X0                  (false for all Y0 — obviously unprovable)
-```
-
-Even when the abstracted statement happens to be provable, there is no proof-shortening benefit: there is no shared structure to exploit. The prover is doing strictly more work for no gain.
-
-### Why ≥2 occurrences of the **same concrete subterm** enables shorter proofs
-
-When the same concrete subterm `t` appears in **two or more positions**, the prover reasoning about the abstracted formula can treat `Y0` as an atomic unit — it never needs to unfold `Y0`'s internal definition. The shared occurrences are tied together by the single variable, so the proof can exploit their uniformity directly.
-
-This is precisely what makes the OCaml abstraction useful: the prover sees `op(Y0, op(Y0, X2)) = Y0` and can reason about idempotence (`op(Y0, Y0) = Y0`) or absorption without ever considering what `Y0 = op(X0, X1)` is made of.
-
-### Why "same concrete subterm" matters (the binding-consistency requirement)
-
-It is not enough to count how many subterms *structurally match the pattern*. They must be the **same concrete subterm** (identical FOF string after renaming).
-
-**Counter-example.** Suppose the pattern is `op(A, A)` (i.e., a term applied to itself) and the formula is:
-```
-op(op(X0,X1), op(X0,X1)) = op(op(X2,X3), op(X2,X3))
-```
-Both sides match the pattern — but `op(X0,X1)` and `op(X2,X3)` are *different* concrete subterms. Replacing both with `Y0` gives:
-```
-op(Y0, Y0) = op(Y0, Y0)   →   trivially Y0 = Y0
-```
-This destroys the information content of the lemma. Worse, if the formula were asymmetric, replacing two *different* subterms with the same variable introduces a new equality constraint between them that was not in the original formula — which may make the abstracted statement false.
-
-**The algorithm therefore:**
-
-1. Collects all structurally-matching subterms (outermost-first).
-2. Groups them by their **exact FOF string** (same concrete term).
-3. Picks the group with the highest count.
-4. Proceeds only if that count is **≥ 2**.
-5. Replaces every occurrence of **that one specific subterm** with `Y0`.
-
-This mirrors exactly what the OCaml heuristic does — the only difference is that Stitch discovers which *structural patterns* are worth looking for, rather than restricting to flat `op(Xi, Xj)` applications.
+The algorithm:
+1. Collects all subterms that structurally match the discovered pattern.
+2. Groups them by exact FOF string.
+3. Selects the group with the highest count.
+4. Proceeds only if that count is ≥ 2.
+5. Replaces every occurrence of that one concrete subterm with `Y0`.
 
 ---
 
 ## What Was Changed
 
-### New file: `python/run_stitch.py`
+### `python/run_stitch.py`
 
-A self-contained Python script that drives the full Stitch abstraction pipeline:
+Drives per-lemma Stitch abstraction. For each `big_step_lemma_NNNN.p` file:
 
-1. **Corpus extraction** — reads all `big_step_lemma_*.p` files and collects both sides of each conjecture body plus all compound subterms. Using lemma conjecture bodies (rather than proof-step equations) ensures the patterns Stitch finds are directly relevant to what we are trying to prove.
+1. **Parse** the TPTP conjecture body into a prefix-term tree.
+2. **Build corpus** from the *immediate subterms* of each side of the equation (one level below the root), excluding the full LHS and RHS. This prevents Stitch from abstracting an entire side of the equation, which would produce unprovable fixed-point statements like `Y0 = t(Y0, ...)`.
+3. **Lambda-encode** each corpus term with De Bruijn indices (required by `stitch_core`).
+4. **Compress** via `stitch_core.compress(terms, iterations=3, max_arity=3)`.
+5. **Apply** each discovered pattern back to the original formula body using the binding-consistency algorithm.
+6. **Reject** if either side of the resulting equation is a bare variable (whole side collapsed to `Y0`).
+7. Write the first accepted abstraction to `lemmas/abstracted_stitch/abstracted_stitch_lemma_NNNN.p`.
 
-2. **Variable renaming** — renames `X0→A, X1→B, ...` because `stitch_core` requires single uppercase letters as variables.
-
-3. **Lambda embedding** — each FOF term `f(x1,...,xk)` is embedded as a closed lambda term `(lam (lam ... body))` with De Bruijn indices. This is required input format for `stitch_core`.
-
-4. **Stitch compression** — calls `stitch_core.compress(terms, iterations=3, max_arity=3)` to obtain up to `k=5` abstractions ordered by compression gain across the corpus.
-
-5. **Back-translation** — converts each Stitch λ-abstraction back to a first-order FOF equation (hash/de Bruijn index substitution, lambda stripping, arity-based uncurrying).
-
-6. **Filtering** — skips higher-order abstractions (containing `lam`) and trivial ones (a single variable).
-
-7. **Pattern application** — for each usable pattern, applies it to every big-step lemma conjecture using the binding-consistency algorithm (≥2 same-concrete-subterm occurrences). Writes `abstracted_stitch_N/abstracted_stitch_N_lemma_NNNN.p`.
-
-8. **Combined directory** — applies *all* applicable patterns simultaneously to each lemma, using distinct variables `Y0, Y1, ...` per pattern. Each pattern is applied with the same soundness check. Writes `abstracted_stitch_combined/abstracted_stitch_combined_lemma_NNNN.p`. This produces the most general (weakest) abstracted statement for each lemma.
+The output directory is wiped and recreated on each run to prevent stale files from previous executions.
 
 Usage:
 ```
-python run_stitch.py <big_step_dir> <output_dir> [--k 5] [--max-arity 3] [--iterations 3]
+python python/run_stitch.py <big_step_dir> <output_dir> [--max-arity 3] [--iterations 3]
 ```
 
----
+### `rust/src/core.rs`
 
-### Modified: `rust/src/core.rs`
+**`collect()`** — after the OCaml parser loop, calls `run_stitch_script(proof_file, &lemmas_dir)`. The returned `.p` file paths are appended to `all_lemma_files` before `prove_lemmas`, so stitch lemmas go through the identical Vampire + Twee pipeline.
 
-**`collect()`** — after the existing OCaml parser loop, calls `run_stitch_script(proof_file, &lemmas_dir)`, which runs the Python script and returns the list of all generated `.p` file paths. These are appended to `all_lemma_files` before the `prove_lemmas` call, so Vampire and Twee run on stitch variants identically to the existing modes.
+**`run_stitch_script()`** — invokes the Python script (preferring `.venv/bin/python` when present), then scans `<lemmas_dir>/abstracted_stitch*/` for `.p` files and returns a sorted list. Returns an empty list on any error (fail-safe).
 
-**`run_stitch_script()`** — private function that:
-- Invokes `python3 ../python/run_stitch.py <lemmas_dir>/big-step <lemmas_dir>`
-- After the script exits, scans `<lemmas_dir>/abstracted_stitch_*/` for `.p` files (covers both `abstracted_stitch_N/` and `abstracted_stitch_combined/`)
-- Returns a sorted list of paths; returns an empty list on any error (fail-safe)
+### `rust/src/utils.rs`
 
----
-
-### Modified: `rust/src/utils.rs`
-
-**`load_lemma()`** — the regex for recognising stitch lemma names is updated to accept both numeric and `combined` suffixes:
+**`load_lemma()`** — maps `abstracted_stitch_lemma_NNNN` names to the `abstracted_stitch/` subdirectory:
 ```rust
-let re = Regex::new(r"^(abstracted_stitch_(?:\d+|combined))_lemma_\d+$").unwrap();
+} else if lemma_name.starts_with("abstracted_stitch_lemma_") {
+    vec![("abstracted_stitch".to_string(), lemma_name.to_string())]
 ```
 
----
+### `rust/src/minimize.rs`
 
-### Modified: `rust/src/minimize.rs`
-
-**`proof_uses_lemma()`** — the stitch alternate regex pattern matches both forms:
+**`proof_uses_lemma()`** — updated stitch regex to match the current naming convention:
 ```rust
-let stitch_alt = format!(r"abstracted_stitch_(?:\d+|combined)_lemma_{}", num);
+let stitch_alt = format!(r"abstracted_stitch_lemma_{}", num);
 ```
 
 ---
@@ -134,17 +89,14 @@ let stitch_alt = format!(r"abstracted_stitch_(?:\d+|combined)_lemma_{}", num);
 ## Data Flow
 
 ```
-big-step lemma files (conjecture bodies + subterms)
-         │
-         └─ run_stitch.py
-               │   stitch_core.compress(lambda_terms)
-               │
-               ├─ abstracted_stitch_0/abstracted_stitch_0_lemma_NNNN.p
-               ├─ abstracted_stitch_1/abstracted_stitch_1_lemma_NNNN.p
-               │   ...
-               └─ abstracted_stitch_combined/abstracted_stitch_combined_lemma_NNNN.p
+big-step lemma files
+        │
+        └─ python/run_stitch.py
+              │  (per-lemma: immediate subterms → stitch_core → apply pattern)
+              │
+              └─ lemmas/abstracted_stitch/abstracted_stitch_lemma_NNNN.p
 
-All .p files → prove_lemmas (Vampire + Twee) → summary.json
+All .p files across all modes → prove_lemmas (Vampire + Twee) → summary.json
 summary.json → shorten → minimize
 ```
 
@@ -152,16 +104,58 @@ summary.json → shorten → minimize
 
 ## Comparison with the OCaml `abstracted` Mode
 
-| Property | OCaml `abstracted` | Stitch `abstracted_stitch_N` |
+| Property | OCaml `abstracted` | Stitch `abstracted_stitch` |
 |---|---|---|
-| Pattern shape | Flat `op(Xi, Xj)` only | Arbitrary depth, e.g. `op(X, op(X, Y))` |
-| Pattern source | Hand-coded scan | Learned from cross-lemma corpus |
-| Patterns per run | 1 | Up to `k` (default 5) |
-| Selection criterion | Most frequent flat application | Maximum compression gain (Stitch objective) |
-| Soundness check | Same string appears ≥ 2 times | Same concrete subterm appears ≥ 2 times |
-| Combined variant | No | Yes (`abstracted_stitch_combined`) |
+| Pattern shape | Flat `op(Xi, Xj)` only | Arbitrary depth |
+| Pattern source | Hand-coded scan | Discovered by Stitch compression |
+| Corpus scope | Single lemma | Single lemma (per-lemma) |
+| Patterns per lemma | 1 | First valid pattern found |
+| Soundness check | Same string ≥ 2 times | Same concrete subterm ≥ 2 times |
+| Rejects bare-variable sides | No | Yes |
 
-Both approaches share the same core soundness argument: replacing a single concrete subterm at all its positions with a fresh universal variable produces a logically weaker statement, whose proofs can be shorter because the prover need not reason about the subterm's internal structure.
+---
+
+## Performance on `Equation650_implies_Equation448.p`
+
+81 lemmas total. Pipeline runtime: ~97 seconds (`--parallel`).
+
+**Abstraction yield:**
+
+| | Count |
+|---|---|
+| Big-step lemmas processed | 81 |
+| Valid abstractions produced | **12** |
+| Rejected (no repeated subterm ≥ 2×) | 60 |
+| Rejected (whole side collapsed to variable) | 9 |
+
+**Proof lengths (stitch vs baseline, selected lemmas):**
+
+| Lemma | big-step | small-step | abstracted | abstracted_stitch |
+|---|---|---|---|---|
+| 6 | 4 | 4 | 58 | 80 |
+| 8 | 3 | 2 | 80 | **35** |
+| 14 | 4 | 2 | 65 | 79 |
+| 32 | 23 | 2 | 80 | 80 |
+
+Stitch lemmas are always provable but never win on per-lemma proof length — an expected result, since more general statements are harder to prove from scratch. The intended value is reusability: a single proved stitch lemma could serve as a shared axiom across multiple later proof obligations, shortening the final combined proof even if its individual proof is long. This angle is not yet evaluated.
+
+---
+
+## Example Abstraction
+
+**Lemma 8 — concrete (big-step):**
+```
+op(X2, op(op(X3, op(op(X1,X0),X0)), X2))
+  = op(op(X2, op(op(X3, op(op(X1,X0),X0)), X2)), op(X0, op(op(X1,X0),X0)))
+```
+
+**Lemma 8 — abstracted_stitch:**
+```
+op(X2, op(Y0, X2))
+  = op(op(X2, op(Y0, X2)), op(X0, op(op(X1, X0), X0)))
+```
+
+The subterm `op(X3, op(op(X1,X0),X0))` appears twice in the original; replacing both with `Y0` yields a statement provable for *any* `Y0`. The original is an instance under `Y0 := op(X3, op(op(X1,X0),X0))`.
 
 ---
 
@@ -169,10 +163,18 @@ Both approaches share the same core soundness argument: replacing a single concr
 
 | File | Type | Change |
 |---|---|---|
-| `python/run_stitch.py` | New | Stitch runner and TPTP generator |
-| `python/demo_stitch.py` | New | Step-by-step illustration of the pipeline |
-| `rust/src/core.rs` | Modified | Add `run_stitch_script()`, call in `collect()` |
-| `rust/src/utils.rs` | Modified | Add `abstracted_stitch_(?:\d+|combined)` case in `load_lemma()` |
-| `rust/src/minimize.rs` | Modified | Update `proof_uses_lemma()` regex for combined |
-| `ocaml/lib/lemma_extractor.ml` | Unchanged | — |
-| `rust/Cargo.toml` | Unchanged | — |
+| `python/run_stitch.py` | Modified | Rewritten for per-lemma approach; single `abstracted_stitch/` output dir |
+| `python/demo_stitch.py` | New | Step-by-step illustration (toy example) |
+| `python/demo_compare.py` | New | End-to-end demo with proof-length comparison table |
+| `rust/src/core.rs` | Modified | `run_stitch_script()` with venv detection; updated dir scan |
+| `rust/src/utils.rs` | Modified | `load_lemma()` handles `abstracted_stitch_lemma_NNNN` names |
+| `rust/src/minimize.rs` | Modified | `proof_uses_lemma()` regex for `abstracted_stitch_` prefix |
+| `CLAUDE.md` | New | Developer guide with pre-commit checklist and stitch notes |
+
+---
+
+## Next Steps
+
+1. **Shared-axiom evaluation** — add proved stitch lemmas as additional axioms when running the prover on later lemmas, and measure whether any subsequent proof becomes shorter.
+2. **Multiple patterns per lemma** — currently only the first valid pattern is applied; applying several simultaneously (with distinct variables `Y0, Y1, ...`) could yield stronger generalisations.
+3. **Cross-lemma patterns** — Stitch was designed for corpus-wide compression. Running it across all big-step lemma bodies at once could find patterns recurring *across* lemmas, not just within one. (Blocked by a `stitch_core` assertion failure at large corpus sizes; needs investigation.)
