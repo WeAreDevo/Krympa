@@ -1,9 +1,9 @@
+use krympa::proof_turnaround::_count_nontrivial_steps;
 use krympa::proof_turnaround::_debug_print_parsed_proof;
 use krympa::proof_turnaround::eq_proof_procedure;
 use krympa::proof_turnaround::parse_vampire_proof;
 use krympa::proof_turnaround::turn_proof_around;
 use krympa::proof_turnaround::SuperpositionStep;
-use krympa::proof_turnaround::_count_nontrivial_steps;
 
 #[test]
 fn eliminates_turned_equality_resolution_and_reflexive_eq() {
