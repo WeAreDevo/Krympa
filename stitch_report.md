@@ -2,6 +2,14 @@
 
 Updated 2026-09-28. Problem: `Equation650_implies_Equation448.p`.
 
+The measurements below precede the merge of parent repository commit `7c19dec`.
+The corrected-version measurements describe `a340740`. Upstream adds
+`--term-size`, new prover binaries, and trivial-inequality-removal step counting,
+so these measurements are retained as historical baselines rather than claimed
+as results of the merged version. The merged branch passes the Stitch and
+term-size regression suites; a new comparative benchmark is still needed for
+claims about its proof lengths or performance.
+
 ## Historical results verified at `0af5af4`
 
 The audit reproduced 81 extracted lemmas, 12 generated Stitch abstractions,

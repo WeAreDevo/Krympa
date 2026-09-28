@@ -62,6 +62,12 @@ class ComparisonTests(unittest.TestCase):
         for text in ['RESULT: Theorem (the conjecture is true).', '% SZS status Unsatisfiable']:
             self.assertTrue(dc.proof_succeeded(text))
 
+    def test_vampire_counts_upstream_trivial_inequality_step(self):
+        self.assertEqual(dc.count_vampire_steps(
+            '1. op(X0,X0) = X0 [input]\n'
+            '2. X0 != X0 [resolution 1]\n'
+            '3. $false [trivial inequality removal 2]\n'), 2)
+
     def test_current_stitch_mode(self):
         mode, number, prover = dc.parse_proof_filename('abstracted_stitch_lemma_0008_twee.proof')
         self.assertEqual((number, prover), (8, 'twee'))

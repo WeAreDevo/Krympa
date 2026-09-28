@@ -3,6 +3,7 @@ use krympa::proof_turnaround::_debug_print_parsed_proof;
 use krympa::proof_turnaround::eq_proof_procedure;
 use krympa::proof_turnaround::parse_vampire_proof;
 use krympa::proof_turnaround::turn_proof_around;
+use krympa::proof_turnaround::Formula;
 use krympa::proof_turnaround::SuperpositionStep;
 
 #[test]
@@ -75,6 +76,65 @@ fn proof_turnaround() {
     let final_proof = eq_proof_procedure(proof_text);
     println!("\n[TEST] Final proof");
     println!("{}", final_proof);
+}
+
+// Proof of big_step_lemma_0023: ends with $false [trivial inequality removal 2903].
+// After turnaround, the step that was $false should hold the conjecture formula
+// with non-empty deps. Regression for the bug where drop_trivial_deps was dropping
+// deps without propagating them, leaving the conclusion step with no dep chain.
+const BIG_STEP_0023_PROOF: &str = r#"1. ! [X0,X1,X2] : op(X0,op(X1,op(op(X2,X0),X1))) = X0 [input(axiom)]
+2. ! [X0,X1,X2,X3,X4] : op(X3,op(X0,X3)) = op(op(X3,op(X0,X3)),op(X4,op(op(X0,op(op(X1,op(op(X2,X0),X1)),X0)),X4))) [input(conjecture)]
+3. ~! [X0,X1,X2,X3,X4] : op(X3,op(X0,X3)) = op(op(X3,op(X0,X3)),op(X4,op(op(X0,op(op(X1,op(op(X2,X0),X1)),X0)),X4))) [negated conjecture 2]
+4. ? [X0,X1,X2,X3,X4] : op(X3,op(X0,X3)) != op(op(X3,op(X0,X3)),op(X4,op(op(X0,op(op(X1,op(op(X2,X0),X1)),X0)),X4))) [ennf transformation 3]
+5. ? [X0,X1,X2,X3,X4] : op(X3,op(X0,X3)) != op(op(X3,op(X0,X3)),op(X4,op(op(X0,op(op(X1,op(op(X2,X0),X1)),X0)),X4))) => op(sK3,op(sK0,sK3)) != op(op(sK3,op(sK0,sK3)),op(sK4,op(op(sK0,op(op(sK1,op(op(sK2,sK0),sK1)),sK0)),sK4))) [skolem symbol introduction]
+6. op(sK3,op(sK0,sK3)) != op(op(sK3,op(sK0,sK3)),op(sK4,op(op(sK0,op(op(sK1,op(op(sK2,sK0),sK1)),sK0)),sK4))) [skolemisation 4,5]
+7. op(X0,op(X1,op(op(X2,X0),X1))) = X0 [cnf transformation 1]
+8. op(sK3,op(sK0,sK3)) != op(op(sK3,op(sK0,sK3)),op(sK4,op(op(sK0,op(op(sK1,op(op(sK2,sK0),sK1)),sK0)),sK4))) [cnf transformation 6]
+9. op(X1,op(op(X2,X0),X1)) = op(op(X1,op(op(X2,X0),X1)),op(X3,op(X0,X3))) [superposition 7,7]
+10. op(X1,op(op(X2,op(op(X3,op(X0,X1)),X2)),op(X0,X1))) = X1 [superposition 7,7]
+34. op(X2,X3) = op(op(X2,X3),op(op(X4,op(op(X0,op(op(X1,X2),X0)),X4)),op(X3,op(X2,X3)))) [superposition 10,9]
+35. op(X3,op(X2,X3)) = op(op(X3,op(X2,X3)),op(op(X4,op(op(X5,op(X0,op(op(X1,X2),X0))),X4)),op(X0,op(op(X1,X2),X0)))) [superposition 10,9]
+2171. op(X3,op(X0,X3)) = op(op(X3,op(X0,X3)),op(op(X4,op(op(X0,op(op(X1,op(op(X2,X0),X1)),X0)),X4)),op(op(X0,op(op(X1,op(op(X2,X0),X1)),X0)),op(op(op(X1,op(op(X2,X0),X1)),X0),op(X0,op(op(X1,op(op(X2,X0),X1)),X0)))))) [superposition 35,34]
+2333. op(X3,op(X0,X3)) = op(op(X3,op(X0,X3)),op(X4,op(op(X0,op(op(X1,op(op(X2,X0),X1)),X0)),X4))) [forward demodulation 2171,9]
+2903. op(sK3,op(sK0,sK3)) != op(sK3,op(sK0,sK3)) [superposition 8,2333]
+3049. $false [trivial inequality removal 2903]"#;
+
+#[test]
+fn test_turnaround_preserves_deps_through_trivial_step() {
+    let parsed = parse_vampire_proof(BIG_STEP_0023_PROOF);
+    let result = turn_proof_around(&parsed);
+
+    let step_3049 = result
+        .get(&3049)
+        .expect("step 3049 missing from turned-around proof");
+
+    assert!(
+        matches!(&step_3049.formula, Formula::Forall(_, inner) if matches!(inner.as_ref(), Formula::Eq(_, _))),
+        "step 3049 should be a universally-quantified equality after turnaround; got: {}",
+        step_3049.formula
+    );
+
+    assert!(
+        !step_3049.deps.is_empty(),
+        "step 3049 has no deps after turnaround — drop_trivial_deps is losing the chain (regression)"
+    );
+}
+
+#[test]
+fn test_turnaround_output_contains_superposition_steps() {
+    let parsed = parse_vampire_proof(BIG_STEP_0023_PROOF);
+    let result = turn_proof_around(&parsed);
+
+    let superposition_steps: Vec<usize> = result
+        .iter()
+        .filter(|(_, s)| s.rule.contains("superposition") || s.rule.contains("demodulation"))
+        .map(|(&i, _)| i)
+        .collect();
+
+    assert!(
+        !superposition_steps.is_empty(),
+        "no superposition/demodulation steps remain after turnaround"
+    );
 }
 
 #[test]

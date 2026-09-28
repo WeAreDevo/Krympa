@@ -254,3 +254,139 @@ fn test_real_vampire_uses_axiom_names_for_backtracked_inputs() {
         "expected step 20 deps to include lemma_* and small_step_lemma_0139 (not a_17). got:\n{annotated}"
     );
 }
+
+// ── prepend_superposition_steps: dedup of reversed-equality equivalents ───────
+
+fn make_axioms() -> Vec<(String, String)> {
+    vec![
+        ("axiom_a".to_string(), "(op(X0,X1) = op(X1,X0))".to_string()),
+        (
+            "axiom_b".to_string(),
+            "(op(X0,op(X1,X2)) = op(op(X0,X1),X2))".to_string(),
+        ),
+    ]
+}
+
+#[test]
+fn test_prepend_deduplicates_reversed_equality_steps() {
+    let axioms = make_axioms();
+
+    let mut relevant_steps: BTreeMap<usize, VampStep> = BTreeMap::new();
+    relevant_steps.insert(
+        10,
+        VampStep {
+            formula: "op(X0,X1) = op(X2,X3)".to_string(),
+            deps: vec![],
+            is_input: false,
+        },
+    );
+    // step 11 is the same equality reversed — should collapse to the same name
+    relevant_steps.insert(
+        11,
+        VampStep {
+            formula: "op(X2,X3) = op(X0,X1)".to_string(),
+            deps: vec![10],
+            is_input: false,
+        },
+    );
+
+    let input_formulas: BTreeMap<usize, String> = BTreeMap::new();
+    let all_steps: BTreeMap<usize, VampStep> = relevant_steps.clone();
+
+    let (output, renaming) =
+        prepend_superposition_steps(&axioms, &relevant_steps, &input_formulas, &all_steps);
+
+    let name_10 = renaming.get(&10).unwrap();
+    let name_11 = renaming.get(&11).unwrap();
+    assert_eq!(
+        name_10, name_11,
+        "reversed-equality steps should share a name"
+    );
+
+    // Only one output block should be emitted for the shared name.
+    let header = format!("% {}:", name_10);
+    assert_eq!(
+        output.matches(&header).count(),
+        1,
+        "deduplicated name should have exactly one output block"
+    );
+}
+
+#[test]
+fn test_prepend_deduplicates_dep_names() {
+    let axioms = make_axioms();
+
+    let mut relevant_steps: BTreeMap<usize, VampStep> = BTreeMap::new();
+    relevant_steps.insert(
+        10,
+        VampStep {
+            formula: "op(X0,X1) = op(X2,X3)".to_string(),
+            deps: vec![],
+            is_input: false,
+        },
+    );
+    relevant_steps.insert(
+        11,
+        VampStep {
+            formula: "op(X2,X3) = op(X0,X1)".to_string(), // reversed twin of 10
+            deps: vec![],
+            is_input: false,
+        },
+    );
+    // step 12 depends on both 10 and 11; after dedup those share one name
+    relevant_steps.insert(
+        12,
+        VampStep {
+            formula: "op(X0,X0) = op(X1,X1)".to_string(),
+            deps: vec![10, 11],
+            is_input: false,
+        },
+    );
+
+    let input_formulas: BTreeMap<usize, String> = BTreeMap::new();
+    let all_steps: BTreeMap<usize, VampStep> = relevant_steps.clone();
+
+    let (output, renaming) =
+        prepend_superposition_steps(&axioms, &relevant_steps, &input_formulas, &all_steps);
+
+    let dep_name = renaming.get(&10).unwrap();
+    let step12_name = renaming.get(&12).unwrap();
+
+    // Output lines are formatted as "% <name>: <formula> | deps: ..."
+    let step12_line = output
+        .lines()
+        .find(|l| l.contains(&format!("% {}:", step12_name)))
+        .expect("step 12 output line not found");
+    assert!(
+        step12_line.matches(dep_name.as_str()).count() <= 1,
+        "duplicate dep name in step line: {}",
+        step12_line
+    );
+}
+
+#[test]
+fn test_prepend_reuses_existing_axiom_name() {
+    let axioms = make_axioms();
+
+    let mut relevant_steps: BTreeMap<usize, VampStep> = BTreeMap::new();
+    relevant_steps.insert(
+        5,
+        VampStep {
+            formula: "(op(X5,X6) = op(X6,X5))".to_string(), // alpha-equiv to axiom_a
+            deps: vec![],
+            is_input: false,
+        },
+    );
+
+    let input_formulas: BTreeMap<usize, String> = BTreeMap::new();
+    let all_steps: BTreeMap<usize, VampStep> = relevant_steps.clone();
+
+    let (_output, renaming) =
+        prepend_superposition_steps(&axioms, &relevant_steps, &input_formulas, &all_steps);
+
+    assert_eq!(
+        renaming.get(&5).unwrap(),
+        "axiom_a",
+        "step matching an existing axiom should reuse the axiom name"
+    );
+}

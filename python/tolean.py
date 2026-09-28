@@ -150,16 +150,6 @@ def normalize_variables(expr):
     new_vars = [renaming[v] for v in canon_vars]
     return new_expr, new_vars
 
-    def repl(match):
-        v = match.group(0)
-        if v.lower() == "op":
-            return v
-        return renaming.get(v.lower(), v.lower())
-
-    new_expr = re.sub(r"[A-Za-z]\w*", repl, expr)
-    new_vars = [renaming[v] for v in canon_vars]
-    return new_expr, new_vars
-
 # Lean abbreviation
 def lean_abbrev(name, expr):
     expr_core = strip_forall(expr)
@@ -286,7 +276,7 @@ def format_side(expr, indent="      ", max_len=80):
     # Join with newline + indent
     return ("\n" + indent).join(lines)
 
-def build_calc_block(proof_lines, renaming, lemma_num_map, allowed_vars):
+def build_calc_block(proof_lines, renaming, lemma_num_map, allowed_vars, name_mapping, axiom_name_map):
     """
     Builds Lean calc block from TPTP proof lines.
     Each step may have:
@@ -340,6 +330,8 @@ def build_calc_block(proof_lines, renaming, lemma_num_map, allowed_vars):
             # only if not mapped to a lemma, fall back to axiom mapping
             dep = axiom_name_map.get(dep, dep)
 
+            if i == 0 or i + 1 >= len(proof_lines):
+                continue
             lhs_raw = apply_renaming(proof_lines[i - 1], renaming, allowed_vars)
             rhs_raw = apply_renaming(proof_lines[i + 1], renaming, allowed_vars)
 
@@ -354,7 +346,7 @@ def build_calc_block(proof_lines, renaming, lemma_num_map, allowed_vars):
     return lines
 
 # Lean lemma with dependencies (works for lemmas and conjecture)
-def lean_lemma(name, expr, deps_from_proof=[], proof_lines=None, lemma_num_map=None):
+def lean_lemma(name, expr, deps_from_proof=[], proof_lines=None, lemma_num_map=None, name_mapping=None, axiom_name_map=None):
     expr_core = strip_forall(expr)
 
     # variables that are allowed to appear in the Lean statement for this lemma
@@ -370,12 +362,13 @@ def lean_lemma(name, expr, deps_from_proof=[], proof_lines=None, lemma_num_map=N
 
     # LEMMA WITH PROOF LINES: build calc, but collapse single-step calc to "by duper [dep]"
     if name.startswith("lemma_") and proof_lines:
-        # IMPORTANT: keep vars (allowed vars) as the 4th argument
         calc_lines = build_calc_block(
             proof_lines,
             renaming,
             lemma_num_map or {},
-            vars
+            vars,
+            name_mapping or {},
+            axiom_name_map or {},
         )
 
         # If calc has exactly one step, don't emit a calc-block at all.
@@ -402,7 +395,9 @@ def lean_lemma(name, expr, deps_from_proof=[], proof_lines=None, lemma_num_map=N
             proof_lines,
             renaming,
             lemma_num_map or {},
-            vars
+            vars,
+            name_mapping or {},
+            axiom_name_map or {},
         )
 
         intros = " ".join(vars)
@@ -709,7 +704,7 @@ lemma_text = ""
 for lemmaname, (expr, deps) in lemmas.items():
     proof_lines = proofs_by_lemma.get(lemmaname)
     lmap = proof_block_maps_by_lemma.get(lemmaname, {})
-    lemma_text += lean_lemma(lemmaname, expr, deps, proof_lines, lmap)
+    lemma_text += lean_lemma(lemmaname, expr, deps, proof_lines, lmap, name_mapping, axiom_name_map)
 
 ending = ""
 

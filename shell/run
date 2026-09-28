@@ -9,7 +9,7 @@ BENCHMARK_BINARY="./benchmarking_binary"
 KRYMPA_BINARY_DEFAULT="./krympa"
 
 # defaults
-TIMEOUT_SECS=2700
+TIMEOUT_SECS=600
 KRYMPA_BINARY="$KRYMPA_BINARY_DEFAULT"
 EXECUTION_MODE_FLAG="${KRYMPA_EXECUTION_MODE:---parallel}"
 
@@ -20,7 +20,7 @@ if [ $# -ge 1 ]; then
         KRYMPA_BINARY="${2:-$KRYMPA_BINARY_DEFAULT}"
     else
         KRYMPA_BINARY="$1"
-        TIMEOUT_SECS="${2:-2700}"
+        TIMEOUT_SECS="${2:-600}"
     fi
 fi
 

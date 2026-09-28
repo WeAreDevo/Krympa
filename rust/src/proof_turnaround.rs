@@ -75,20 +75,23 @@ pub struct SuperpositionStep {
 
 /// Check if a rule is a real proof step
 fn is_proof_step(rule: &str) -> bool {
-    rule.starts_with("superposition")
-        || rule.starts_with("resolution")
-        || rule.starts_with("factoring")
-        || rule.starts_with("equality factoring")
-        || rule.starts_with("equality resolution")
-        || rule.starts_with("inequality resolution")
-        || rule.starts_with("rewriting")
-        || rule.starts_with("demodulation")
-        || rule.starts_with("forward demodulation")
-        || rule.starts_with("backward demodulation")
-        || rule.starts_with("simplification")
-        || rule.starts_with("subsumption")
-        || rule.starts_with("distinctness")
-        || rule.starts_with("trivial inequality removal")
+    let core = rule
+        .trim_start_matches("forward ")
+        .trim_start_matches("backward ");
+    core.starts_with("superposition")
+        || core.starts_with("resolution")
+        || core.starts_with("subsumption resolution")
+        || core.starts_with("subsumption demodulation")
+        || core.starts_with("factoring")
+        || core.starts_with("equality factoring")
+        || core.starts_with("equality resolution")
+        || core.starts_with("inequality resolution")
+        || core.starts_with("rewriting")
+        || core.starts_with("demodulation")
+        || core.starts_with("simplification")
+        || core.starts_with("subsumption")
+        || core.starts_with("distinctness")
+        || core.starts_with("trivial inequality removal")
         || rule == "equality"
         || rule == "inequality"
 }
@@ -457,16 +460,39 @@ fn is_trivial_step(step: &SuperpositionStep) -> bool {
     false
 }
 
-/// Remove dependencies that point to trivial steps
-/// This makes “use t=t as implicit premise” work naturally: the dep is dropped
+/// Remove dependencies that point to trivial steps, propagating their deps upward.
+/// If step A depends on trivial step T which depends on [B, C], A inherits [B, C].
 fn drop_trivial_deps(steps: &mut BTreeMap<usize, SuperpositionStep>) {
     let trivial: BTreeSet<usize> = steps
         .iter()
         .filter_map(|(&i, s)| if is_trivial_step(s) { Some(i) } else { None })
         .collect();
 
+    // collect trivial step deps once
+    let trivial_deps: HashMap<usize, Vec<(usize, usize)>> = trivial
+        .iter()
+        .filter_map(|&t| steps.get(&t).map(|s| (t, s.deps.clone())))
+        .collect();
+
     for (_, step) in steps.iter_mut() {
-        step.deps.retain(|&(_, d)| !trivial.contains(&d));
+        let mut new_deps: Vec<(usize, usize)> = Vec::new();
+        for &(lvl, d) in &step.deps {
+            if trivial.contains(&d) {
+                // substitute: inherit the trivial step's own deps
+                if let Some(inherited) = trivial_deps.get(&d) {
+                    new_deps.extend(inherited.iter().copied());
+                }
+                // if the trivial step has no deps, it is dropped silently
+            } else {
+                new_deps.push((lvl, d));
+            }
+        }
+        // deduplicate while preserving order
+        let mut seen = BTreeSet::new();
+        step.deps = new_deps
+            .into_iter()
+            .filter(|&(_, d)| seen.insert(d))
+            .collect();
     }
 }
 
@@ -803,10 +829,14 @@ pub fn turn_proof_around(
     steps: &BTreeMap<usize, SuperpositionStep>,
 ) -> BTreeMap<usize, SuperpositionStep> {
     let Some(chain) = compute_neg_chain(steps) else {
+        crate::klog_debug!(
+            "[DEBUG] turn_proof_around: no negated conjecture chain found — skipping turnaround"
+        );
         return steps.clone();
     };
 
     let Some(start) = chain.start else {
+        crate::klog_debug!("[DEBUG] turn_proof_around: negated chain found but no proof-step start — skipping turnaround");
         return steps.clone();
     };
 

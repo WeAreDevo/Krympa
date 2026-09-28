@@ -1,6 +1,5 @@
 # === Rust ===
-/target/
-/rust/target/
+**/target/
 **/*.rs.bk
 Cargo.lock
 
@@ -8,8 +7,7 @@ Cargo.lock
 lean/.lake/
 
 # === OCaml ===
-/_build/
-/ocaml/_build/
+**/_build/
 *.cm*
 *.o
 *.annot

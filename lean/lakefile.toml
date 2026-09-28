@@ -19,10 +19,5 @@ name = "duper"
 scope = "leanprover-community"
 rev = "v4.25.0"
 
-[[require]]
-name = "Canonical"
-scope = "chasenorman"
-rev = "v4.25.0"
-
 [[lean_lib]]
 name = "Proof"

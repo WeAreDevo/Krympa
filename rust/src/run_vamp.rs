@@ -27,7 +27,12 @@ pub fn run_vampire_only(input: &str, output: &str) {
 
 /// Helper: actually runs the Vampire binary
 pub fn run_vampire(input_file: &str, output_file: &str) {
-    let vampire_bin = Path::new("../bin/vampire");
+    let vampire_bin_name = if cfg!(target_os = "macos") {
+        "../bin/vampire_mac"
+    } else {
+        "../bin/vampire"
+    };
+    let vampire_bin = Path::new(vampire_bin_name);
 
     let output = Command::new(vampire_bin)
         .arg(input_file)

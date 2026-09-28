@@ -252,12 +252,13 @@ pub fn formulas_match_with_permutations(formula: &str, other_formula: &str) -> b
                 Some(x) => x,
                 None => continue,
             };
-            let parsed_formula = Term::Fun("=".to_string(), vec![lhs, rhs]);
-
-            let mut fwd: HashMap<String, String> = HashMap::new();
-            let mut rev: HashMap<String, String> = HashMap::new();
-            if match_terms_alpha(&parsed_formula, &parsed_other, &mut fwd, &mut rev) {
-                return true;
+            for (a, b) in [(lhs.clone(), rhs.clone()), (rhs, lhs)] {
+                let parsed_formula = Term::Fun("=".to_string(), vec![a, b]);
+                let mut fwd: HashMap<String, String> = HashMap::new();
+                let mut rev: HashMap<String, String> = HashMap::new();
+                if match_terms_alpha(&parsed_formula, &parsed_other, &mut fwd, &mut rev) {
+                    return true;
+                }
             }
         }
         false
@@ -269,10 +270,14 @@ pub fn formulas_match_with_permutations(formula: &str, other_formula: &str) -> b
             Some(x) => x,
             None => return false,
         };
-        let parsed_formula = Term::Fun("=".to_string(), vec![lhs, rhs]);
-
-        let mut fwd: HashMap<String, String> = HashMap::new();
-        let mut rev: HashMap<String, String> = HashMap::new();
-        match_terms_alpha(&parsed_formula, &parsed_other, &mut fwd, &mut rev)
+        for (a, b) in [(lhs.clone(), rhs.clone()), (rhs, lhs)] {
+            let parsed_formula = Term::Fun("=".to_string(), vec![a, b]);
+            let mut fwd: HashMap<String, String> = HashMap::new();
+            let mut rev: HashMap<String, String> = HashMap::new();
+            if match_terms_alpha(&parsed_formula, &parsed_other, &mut fwd, &mut rev) {
+                return true;
+            }
+        }
+        false
     }
 }

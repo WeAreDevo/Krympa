@@ -1,10 +1,10 @@
 use krympa::bench_run::run;
-use krympa::execution::{parse_execution_mode_args, set_execution_mode};
+use krympa::execution::{parse_execution_options, set_execution_mode, set_term_size_aware};
 use std::env;
 
 fn main() {
     let raw_args: Vec<String> = env::args().skip(1).collect();
-    let (mode, args) = match parse_execution_mode_args(&raw_args) {
+    let (mode, tsa, args) = match parse_execution_options(&raw_args) {
         Ok(parsed) => parsed,
         Err(err) => {
             krympa::klog_error!("{}", err);
@@ -17,9 +17,11 @@ fn main() {
         std::process::exit(1);
     }
 
+    set_term_size_aware(tsa);
+
     if args.len() < 2 {
         krympa::klog_error!(
-            "Usage: benchmarking [--parallel|--sequential] <input_folder> <timeout_secs> [krympa_binary]"
+            "Usage: benchmarking [--parallel|--sequential] [--term-size] <input_folder> <timeout_secs> [krympa_binary]"
         );
         std::process::exit(1);
     }

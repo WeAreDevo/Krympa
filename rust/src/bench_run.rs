@@ -1,4 +1,4 @@
-use crate::execution::ExecutionMode;
+use crate::execution::{term_size_aware, ExecutionMode};
 use crate::prover_wrapper::proof_length;
 use std::fs;
 use std::io::Read;
@@ -60,6 +60,11 @@ pub fn run(input_folder: &str, krympa_bin: &str, timeout_secs: u64, execution_mo
 
             let mut child = match Command::new(krympa_bin)
                 .args([execution_mode.cli_flag(), cmd, input_str.as_str()])
+                .args(if term_size_aware() {
+                    vec!["--term-size"]
+                } else {
+                    Vec::new()
+                })
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()

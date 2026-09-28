@@ -51,18 +51,30 @@ fn run_external_prover(exe_path: &str, args: &[&str]) -> Option<String> {
 }
 
 fn vampire_path() -> String {
+    let bin = if cfg!(target_os = "macos") {
+        "vampire_mac"
+    } else {
+        "vampire"
+    };
     env::current_dir()
         .unwrap()
-        .join("../bin/vampire")
+        .join("../bin")
+        .join(bin)
         .to_str()
         .unwrap()
         .to_string()
 }
 
 fn twee_path() -> String {
+    let bin = if cfg!(target_os = "macos") {
+        "twee_mac"
+    } else {
+        "twee"
+    };
     env::current_dir()
         .unwrap()
-        .join("../bin/twee")
+        .join("../bin")
+        .join(bin)
         .to_str()
         .unwrap()
         .to_string()
@@ -81,8 +93,13 @@ pub fn run_twee(file: &str) -> Option<String> {
 pub fn proof_length_vampire(proof: &str) -> usize {
     let mut count = 0;
 
-    // core inference indicators
-    let proof_keywords = ["demodulation", "superposition", "resolution"];
+    // core inference indicators — must match superpose.rs parse_vampire_proof
+    let proof_keywords = [
+        "demodulation",
+        "superposition",
+        "resolution",
+        "trivial inequality removal",
+    ];
 
     for line in proof.lines() {
         let l = line.trim_start();
@@ -129,6 +146,121 @@ pub fn proof_length(prover: &str, proof: &str) -> usize {
         "vampire" => proof_length_vampire(proof),
         "twee" => proof_length_twee(proof),
         _ => proof.lines().count(),
+    }
+}
+
+/// Number of `op(` nodes in a term — a measure of structural complexity.
+/// A bare variable scores 1 (minimum meaningful unit).
+fn term_size(term: &str) -> usize {
+    term.matches("op(").count() * 2 + 1
+}
+
+/// Average term size across all intermediate terms in a twee proof.
+/// Counts every line inside a `Proof:` block that is not a `= { by … }` step line.
+pub fn avg_term_size_twee(proof: &str) -> f64 {
+    let mut in_proof = false;
+    let mut sizes: Vec<usize> = Vec::new();
+
+    for line in proof.lines() {
+        let t = line.trim();
+        if t.starts_with("Proof:") {
+            in_proof = true;
+            continue;
+        }
+        // New section starts, exits the proof block
+        if t.starts_with("Lemma ") || t.starts_with("Goal ") || t.starts_with("RESULT") {
+            in_proof = false;
+            continue;
+        }
+        if !in_proof || t.is_empty() {
+            continue;
+        }
+        // Skip step lines: "= { by … }"
+        if t.starts_with("= {") {
+            continue;
+        }
+        sizes.push(term_size(t));
+    }
+
+    if sizes.is_empty() {
+        return 0.0;
+    }
+    sizes.iter().sum::<usize>() as f64 / sizes.len() as f64
+}
+
+/// Average term size across all inference-step formulas in a vampire proof.
+/// Only considers superposition / demodulation / resolution steps.
+/// For each such step the formula is split on `=` / `!=` and both sides are measured.
+pub fn avg_term_size_vampire(proof: &str) -> f64 {
+    let proof_keywords = [
+        "demodulation",
+        "superposition",
+        "resolution",
+        "trivial inequality removal",
+    ];
+    let mut sizes: Vec<usize> = Vec::new();
+
+    for line in proof.lines() {
+        let l = line.trim_start();
+        if l.is_empty() || l.starts_with('%') {
+            continue;
+        }
+        // Strip leading line number "N. "
+        let l_no_num = if let Some(dot_pos) = l.find('.') {
+            l[dot_pos + 1..].trim_start()
+        } else {
+            l
+        };
+        if !l_no_num.contains('[') || !proof_keywords.iter().any(|kw| l_no_num.contains(kw)) {
+            continue;
+        }
+        // Formula is everything before the last `[`
+        let formula = match l_no_num.rfind('[') {
+            Some(pos) => l_no_num[..pos].trim(),
+            None => continue,
+        };
+        // Strip universal quantifier "! [X0,…] : body" if present
+        let body = if formula.starts_with("! [") {
+            match formula.find("] : ") {
+                Some(pos) => formula[pos + 4..].trim(),
+                None => formula,
+            }
+        } else {
+            formula
+        };
+        // Split equation into its two sides; fall back to treating the whole body as one term
+        if let Some(pos) = body.find(" != ") {
+            sizes.push(term_size(body[..pos].trim()));
+            sizes.push(term_size(body[pos + 4..].trim()));
+        } else if let Some(pos) = body.find(" = ") {
+            sizes.push(term_size(body[..pos].trim()));
+            sizes.push(term_size(body[pos + 3..].trim()));
+        } else {
+            sizes.push(term_size(body));
+        }
+    }
+
+    if sizes.is_empty() {
+        return 0.0;
+    }
+    sizes.iter().sum::<usize>() as f64 / sizes.len() as f64
+}
+
+/// When `--term-size` is on, proof A is better than proof B if:
+///   • A has strictly fewer steps, OR
+///   • A has lower average term size and is at most TOLERANCE × longer.
+/// Falls back to pure step-count comparison when term sizes are equal.
+const TERM_SIZE_TOLERANCE: f64 = 1.5;
+
+pub fn proof_quality_better(a_steps: usize, a_avg: f64, b_steps: usize, b_avg: f64) -> bool {
+    if a_steps == b_steps {
+        a_avg < b_avg
+    } else if a_steps < b_steps {
+        // A is shorter — A wins unless B has lower avg and is within tolerance
+        !(b_avg < a_avg && b_steps as f64 <= a_steps as f64 * TERM_SIZE_TOLERANCE)
+    } else {
+        // B is shorter — A wins only if A has lower avg and is within tolerance
+        a_avg < b_avg && a_steps as f64 <= b_steps as f64 * TERM_SIZE_TOLERANCE
     }
 }
 
@@ -183,100 +315,82 @@ pub fn prove_lemmas(
     let mut sorted_nums: Vec<u32> = groups.keys().cloned().collect();
     sorted_nums.sort();
 
-    let mode = execution_mode();
-    crate::klog_info!(
-        "[INFO] Proving {} lemma groups in {} mode.",
-        sorted_nums.len(),
-        mode.as_str()
-    );
-
-    match mode {
-        ExecutionMode::Parallel => sorted_nums
-            .par_iter()
-            .filter_map(|&n| {
-                prove_lemma_group(n, &groups[&n], provers, &vampire_dir, &twee_dir, out_dir)
-            })
-            .collect(),
-        ExecutionMode::Sequential => sorted_nums
-            .iter()
-            .filter_map(|&n| {
-                prove_lemma_group(n, &groups[&n], provers, &vampire_dir, &twee_dir, out_dir)
-            })
-            .collect(),
-    }
-}
-
-fn prove_lemma_group(
-    n: u32,
-    files: &[String],
-    provers: &[&str],
-    vampire_dir: &Path,
-    twee_dir: &Path,
-    out_dir: &Path,
-) -> Option<(u32, (String, String, String))> {
-    crate::klog_debug!("[DEBUG] Proving lemma {}", n);
-    crate::klog_debug!(
-        "[DEBUG] lemma {} running on thread {:?}",
-        n,
-        std::thread::current().id()
-    );
-
-    // collect all successful proofs for this group
-    let mut all_proofs: Vec<(String, String, usize, String)> = Vec::new(); // (prover, proof, len, filename)
-
-    for lemma_file in files {
-        let file_stem = Path::new(lemma_file).file_stem().unwrap().to_string_lossy();
-        let vampire_file = vampire_dir.join(format!("{}_vampire.proof", file_stem));
-        let twee_file = twee_dir.join(format!("{}_twee.proof", file_stem));
-
-        for (prover, proof) in try_provers(lemma_file, provers, &vampire_file, &twee_file) {
-            if !proof_succeeded(&proof) {
-                continue;
-            }
-            let len = proof_length(&prover, &proof);
-
-            crate::klog_debug!("[DEBUG] {} proof length: {} lines", prover, len);
-            all_proofs.push((prover, proof, len, file_stem.to_string()));
-        }
-    }
-
-    if let Some((best_prover, best_proof, best_len, best_file)) =
-        all_proofs.into_iter().min_by(|a, b| {
-            if a.2 != b.2 {
-                a.2.cmp(&b.2)
-            } else {
-                let order = |p: &String| {
-                    if p == "twee" {
-                        0
-                    } else if p == "vampire" {
-                        1
-                    } else {
-                        2
-                    }
-                };
-                order(&a.0).cmp(&order(&b.0))
-            }
-        })
-    {
-        let final_path = out_dir.join(format!("{}_{}.proof", best_file, best_prover));
-        if let Err(e) = fs::write(&final_path, &best_proof) {
-            crate::klog_error!("[ERROR] Failed to save shortest proof: {}", e);
-        } else {
-            crate::klog_debug!("[DEBUG] Saved shortest proof to '{}'", final_path.display());
-        }
-
+    let process_n = |&n: &u32| -> Option<(u32, (String, String, String))> {
+        crate::klog_debug!("[DEBUG] Proving lemma {}", n);
         crate::klog_debug!(
-            "[DEBUG] Shortest proof for lemma {} found in '{}' by '{}' with {} lines",
+            "[DEBUG] lemma {} running on thread {:?}",
             n,
-            best_file,
-            best_prover,
-            best_len
+            std::thread::current().id()
         );
 
-        Some((n, (best_file, best_prover, best_proof)))
+        let files = &groups[&n];
+
+        // collect all successful proofs for this group
+        let mut all_proofs: Vec<(String, String, usize, String)> = Vec::new(); // (prover, proof, len, filename)
+
+        for lemma_file in files {
+            let file_stem = Path::new(lemma_file).file_stem().unwrap().to_string_lossy();
+            let vampire_file = vampire_dir.join(format!("{}_vampire.proof", file_stem));
+            let twee_file = twee_dir.join(format!("{}_twee.proof", file_stem));
+
+            for (prover, proof) in try_provers(lemma_file, provers, &vampire_file, &twee_file) {
+                if !proof_succeeded(&proof) {
+                    continue;
+                }
+                let len = proof_length(&prover, &proof);
+
+                crate::klog_debug!("[DEBUG] {} proof length: {} lines", prover, len);
+                all_proofs.push((prover, proof, len, file_stem.to_string()));
+            }
+        }
+
+        // pick the shortest proof across all modes and provers
+        if let Some((best_prover, best_proof, best_len, best_file)) =
+            all_proofs.into_iter().min_by(|a, b| {
+                // compare lengths first
+                if a.2 != b.2 {
+                    a.2.cmp(&b.2)
+                } else {
+                    // Tie-breaker: prefer "twee" over "vampire" over others
+                    let order = |p: &String| {
+                        if p == "twee" {
+                            0
+                        } else if p == "vampire" {
+                            1
+                        } else {
+                            2
+                        }
+                    };
+                    order(&a.0).cmp(&order(&b.0))
+                }
+            })
+        {
+            let final_path = out_dir.join(format!("{}_{}.proof", best_file, best_prover));
+            if let Err(e) = fs::write(&final_path, &best_proof) {
+                crate::klog_error!("[ERROR] Failed to save shortest proof: {}", e);
+            } else {
+                crate::klog_debug!("[DEBUG] Saved shortest proof to '{}'", final_path.display());
+            }
+
+            crate::klog_debug!(
+                "[DEBUG] Shortest proof for lemma {} found in '{}' by '{}' with {} lines",
+                n,
+                best_file,
+                best_prover,
+                best_len
+            );
+
+            Some((n, (best_file, best_prover, best_proof)))
+        } else {
+            crate::klog_warn!("[WARN] No successful proof for group {}", n);
+            None
+        }
+    };
+
+    if execution_mode() == ExecutionMode::Sequential {
+        sorted_nums.iter().filter_map(&process_n).collect()
     } else {
-        crate::klog_warn!("[WARN] No successful proof for group {}", n);
-        None
+        sorted_nums.par_iter().filter_map(&process_n).collect()
     }
 }
 

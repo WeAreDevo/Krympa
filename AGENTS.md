@@ -39,6 +39,10 @@ target/debug/krympa --parallel minimize "$INPUT"
 ```
 
 Parallel execution is the default; `--sequential` is available.
+`--term-size` enables upstream's term-size preference when minimization chooses
+between Vampire and Twee proofs: smaller average terms may justify up to 1.5x
+as many steps. It is off by default. The flag also works with `shell/run_one`
+and the benchmarking binary, alongside the fork's `--execution-mode` aliases.
 `KRYMPA_LOG=debug` enables detailed logs; normal logging defaults to `info`.
 The phases share and overwrite `lemmas/`, `proofs/`, `tmp/`, and `output/` under
 the parent of the working directory. Preserve existing results and use an
@@ -76,6 +80,12 @@ changes. Run the Rust and Python suites and `git diff --check` before committing
 Do not stage generated proofs, caches, build directories, or incidental binaries.
 Do not clean or revert pre-existing user changes. Preserve them when merging.
 Use ordinary merge commits for upstream integration unless instructed otherwise.
+
+`origin` is the fork `WeAreDevo/Krympa`; `upstream` is its parent
+`kondylidou/Krympa`. Synchronizing only `origin/main` does not fetch parent
+changes. Fetch `upstream`, merge `upstream/main` into the fork's `main` while
+preserving fork commits, then merge `main` into the feature branch. Push the
+fork's `main` when asked to synchronize the hosted fork.
 
 ## Next research direction
 

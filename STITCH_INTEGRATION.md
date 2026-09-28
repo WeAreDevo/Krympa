@@ -94,6 +94,13 @@ Stitch winners is insufficient to validate downstream Stitch handling.
 See `stitch_report.md` for measurements of the audited and corrected versions,
 and `STITCH_AUDIT.md` for findings against historical commit `0af5af4`.
 
+The parent repository's `--term-size` option is now integrated. During
+minimization, it can prefer a proof with smaller average terms over one with
+fewer steps, within the upstream 1.5x length tolerance. Collection still selects
+by local step count. The option is separate from cross-lemma reuse scoring.
+Upstream also counts Vampire's trivial inequality removal steps; the Python
+comparison now mirrors that convention.
+
 `demo_stitch.py` is a corpus-wide toy illustration; `inspect_proof_stitch.py`
 explores patterns in an existing minimized proof. Their displayed abstractions
 are proposals, not certified theorems.

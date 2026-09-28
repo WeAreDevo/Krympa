@@ -64,7 +64,7 @@ def parse_proof_filename(name: str):
 # Mirrors prover_wrapper.rs proof_length_vampire / proof_length_twee
 
 def count_vampire_steps(text: str) -> int:
-    keywords = ("demodulation", "superposition", "resolution")
+    keywords = ("demodulation", "superposition", "resolution", "trivial inequality removal")
     count = 0
     for line in text.splitlines():
         l = line.lstrip()

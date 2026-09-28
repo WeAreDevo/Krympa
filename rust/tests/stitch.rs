@@ -158,7 +158,7 @@ fn shorten_reuses_a_forced_stitch_winner_and_cli_reports_minimize_errors() {
     for dir in ["rust", "bin", "output"] {
         fs::create_dir_all(f.0.join(dir)).unwrap();
     }
-    for prover in ["vampire", "twee"] {
+    for prover in ["vampire", "twee", "vampire_mac", "twee_mac"] {
         let script = f.0.join("bin").join(prover);
         fs::write(
             &script,
@@ -170,7 +170,12 @@ fn shorten_reuses_a_forced_stitch_winner_and_cli_reports_minimize_errors() {
     f.write("lemmas/small-step/small_step_lemma_0002.p", "fof(lemma_0001, lemma,\n ! [X0] : (op(op(X0,X0),op(X0,X0)) = op(X0,X0))\n).\nfof(conjecture_0002, conjecture,\n ! [X0] : (op(op(X0,X0),X0) = X0)\n).\n");
     f.write("output/summary_test.json", r#"{"1":["abstracted_stitch_lemma_0001","twee",""],"2":["small_step_lemma_0002","twee",""]}"#);
     let result = Command::new(env!("CARGO_BIN_EXE_krympa"))
-        .args(["shorten", "test.p"])
+        .args([
+            "--term-size",
+            "--execution-mode=sequential",
+            "shorten",
+            "test.p",
+        ])
         .current_dir(f.0.join("rust"))
         .output()
         .unwrap();
