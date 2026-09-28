@@ -2,15 +2,20 @@
 set -e
 
 MODE_FLAG="${KRYMPA_EXECUTION_MODE:---parallel}"
-if [ $# -ge 1 ]; then
+TERM_FLAGS=()
+while [ $# -ge 1 ]; do
   case "$1" in
+    --term-size)
+      TERM_FLAGS=(--term-size)
+      shift
+      ;;
     --parallel|--sequential)
       MODE_FLAG="$1"
       shift
       ;;
     --execution-mode)
       if [ $# -lt 2 ]; then
-        echo "Usage: $0 [--parallel|--sequential] <input-file> [krympa-binary]"
+        echo "Usage: $0 [--parallel|--sequential] [--term-size] <input-file> [krympa-binary]"
         exit 1
       fi
       MODE_FLAG="--$2"
@@ -24,11 +29,12 @@ if [ $# -ge 1 ]; then
       MODE_FLAG="--sequential"
       shift
       ;;
+    *) break ;;
   esac
-fi
+done
 
 if [ $# -lt 1 ] || [ $# -gt 2 ]; then
-  echo "Usage: $0 [--parallel|--sequential] <input-file> [krympa-binary]"
+  echo "Usage: $0 [--parallel|--sequential] [--term-size] <input-file> [krympa-binary]"
   exit 1
 fi
 
@@ -45,7 +51,7 @@ if [ ! -x "$KRYMPA_BINARY" ]; then
   exit 1
 fi
 
-"$KRYMPA_BINARY" "$MODE_FLAG" run_vampire "$INPUT"
-"$KRYMPA_BINARY" "$MODE_FLAG" collect "$INPUT"
-"$KRYMPA_BINARY" "$MODE_FLAG" shorten "$INPUT"
-"$KRYMPA_BINARY" "$MODE_FLAG" minimize "$INPUT"
+"$KRYMPA_BINARY" "$MODE_FLAG" "${TERM_FLAGS[@]}" run_vampire "$INPUT"
+"$KRYMPA_BINARY" "$MODE_FLAG" "${TERM_FLAGS[@]}" collect "$INPUT"
+"$KRYMPA_BINARY" "$MODE_FLAG" "${TERM_FLAGS[@]}" shorten "$INPUT"
+"$KRYMPA_BINARY" "$MODE_FLAG" "${TERM_FLAGS[@]}" minimize "$INPUT"

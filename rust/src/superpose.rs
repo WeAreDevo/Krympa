@@ -46,7 +46,12 @@ pub fn parse_vampire_proof(
     let mut relevant: BTreeSet<usize> = BTreeSet::new();
 
     // keywords indicating relevant proof steps
-    let proof_keywords = ["demodulation", "superposition", "resolution"];
+    let proof_keywords = [
+        "demodulation",
+        "superposition",
+        "resolution",
+        "trivial inequality removal",
+    ];
 
     for line in content.lines() {
         let line_trimmed = line.trim();
@@ -353,9 +358,25 @@ pub fn extract_superposition_steps(
     let proving_vnum = relevant_set.iter().copied().find(|vnum| {
         all_steps
             .get(vnum)
-            .map(|step| formulas_match(lemma_formula, &format!("({})", step.formula)))
+            .map(|step| {
+                formulas_match(lemma_formula, &step.formula)
+                    || formulas_match(lemma_formula, &format!("({})", step.formula))
+            })
             .unwrap_or(false)
-    })?;
+    });
+
+    if proving_vnum.is_none() {
+        crate::klog_debug!(
+            "[DEBUG] extract_superposition_steps: no step matched lemma formula: {}\n  relevant steps: {}",
+            lemma_formula,
+            relevant_set.iter()
+                .filter_map(|v| all_steps.get(v).map(|s| format!("{}: {}", v, s.formula)))
+                .collect::<Vec<_>>()
+                .join("\n  ")
+        );
+    }
+
+    let proving_vnum = proving_vnum?;
 
     // gather full transitive deps and keep only relevant ones
     let mut closure: BTreeSet<usize> = BTreeSet::new();
@@ -445,13 +466,21 @@ pub fn prepend_superposition_steps(
         format!("lemma_{:04}", n)
     };
 
-    // build vamp -> global lemma name renaming for relevant steps
+    // build vamp -> global lemma name renaming for relevant steps.
+    // also check steps already named in this run so equivalent formulas
+    // (including reversed equality direction) collapse to the same name.
     let mut renaming: BTreeMap<usize, String> = BTreeMap::new();
+    let mut seen_this_run: Vec<(String, String)> = Vec::new();
     for (vnum, step) in relevant_steps {
         if let Some(existing) = find_existing_name_for_formula(axioms, &step.formula) {
             renaming.insert(*vnum, existing.to_string());
+        } else if let Some(existing) = find_existing_name_for_formula(&seen_this_run, &step.formula)
+        {
+            renaming.insert(*vnum, existing.to_string());
         } else {
-            renaming.insert(*vnum, fresh());
+            let name = fresh();
+            seen_this_run.push((name.clone(), step.formula.clone()));
+            renaming.insert(*vnum, name);
         }
     }
 
@@ -459,14 +488,25 @@ pub fn prepend_superposition_steps(
     annotated.push_str("% === Superposition Steps ===\n");
 
     let mut memo: BTreeMap<usize, BTreeSet<usize>> = BTreeMap::new();
+    let mut output_names: BTreeSet<String> = BTreeSet::new();
 
     for (vnum, step) in relevant_steps {
         let lemma_name = renaming.get(vnum).unwrap();
 
+        // skip if an equivalent step was already output under this name
+        if !output_names.insert(lemma_name.clone()) {
+            continue;
+        }
+
         let mut dep_strings: Vec<String> = Vec::new();
+        let mut seen_dep_names: BTreeSet<String> = BTreeSet::new();
 
         for &d in &step.deps {
             if let Some(dep_lemma) = renaming.get(&d) {
+                // skip if this dep name was already listed (dedup of equivalent steps)
+                if !seen_dep_names.insert(dep_lemma.clone()) {
+                    continue;
+                }
                 // dependency is another relevant step
                 let dep_formula = relevant_steps
                     .get(&d)

@@ -17,7 +17,7 @@ the accompanying paper:
 ## Requirements
 
 * Python 3
-* A Unix environment (Linux)
+* A Unix environment (Linux or macOS)
 
 ---
 
@@ -114,6 +114,17 @@ Then run:
 ./run_one <input-file> <krympa-binary>
 ./run <timeout> <krympa-binary>
 ```
+
+---
+
+## Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--parallel` / `--sequential` | parallel | Execution mode |
+| `--term-size` | off | Prefer proofs with smaller average term size over slightly longer proofs |
+
+Flags go before the subcommand: `./krympa --sequential --term-size minimize <input-file>`
 
 ---
 

@@ -1,4 +1,5 @@
 use krympa::alpha_match::formulas_match;
+use krympa::alpha_match::formulas_match_with_permutations;
 use krympa::alpha_match::normalize_formula_alpha;
 
 #[test]
@@ -137,4 +138,35 @@ fn test_vampire_formulas() {
     let formula1 = "! [X0, X1, X2, X3] : (op(X3,op(op(X1,op(op(X2,X1),X1)),X3)) = op(op(X3,op(op(X1,op(op(X2,X1),X1)),X3)),op(X0,op(op(X1,op(op(X2,X1),X1)),X0))))";
     let formula2 = "(op(X48,op(op(X45,op(op(X46,X45),X45)),X48)) = op(op(X48,op(op(X45,op(op(X46,X45),X45)),X48)),op(X44,op(op(X45,op(op(X46,X45),X45)),X44))))";
     assert!(formulas_match(formula1, formula2));
+}
+
+// ── formulas_match_with_permutations: reversed equality direction ─────────────
+
+#[test]
+fn test_permutations_reversed_equality_matches() {
+    let formula = "! [X, Y] : (op(X,Y) = op(Y,X))";
+    let target = "(op(V1,V0) = op(V0,V1))"; // sides swapped
+    assert!(formulas_match_with_permutations(formula, target));
+}
+
+#[test]
+fn test_permutations_reversed_equality_no_false_positive() {
+    let formula = "! [X, Y] : (op(X,Y) = X)";
+    let target = "(op(X0,X1) = op(X1,X0))";
+    assert!(!formulas_match_with_permutations(formula, target));
+}
+
+#[test]
+fn test_permutations_no_quant_reversed() {
+    // No quantifier → large-formula branch; reversed sides should still match.
+    let formula = "(op(X0,X1) = op(X1,X0))";
+    let target = "(op(V1,V0) = op(V0,V1))";
+    assert!(formulas_match_with_permutations(formula, target));
+}
+
+#[test]
+fn test_permutations_small_vars_reversed() {
+    let formula = "! [X, Y, Z] : (op(X,op(Y,Z)) = op(op(X,Y),Z))";
+    let target = "(op(op(V0,V1),V2) = op(V0,op(V1,V2)))"; // sides swapped
+    assert!(formulas_match_with_permutations(formula, target));
 }

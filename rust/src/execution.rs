@@ -84,3 +84,27 @@ pub fn parse_execution_mode_args(args: &[String]) -> Result<(ExecutionMode, Vec<
 
     Ok((mode, positionals))
 }
+
+static TERM_SIZE_AWARE: OnceLock<bool> = OnceLock::new();
+
+pub fn term_size_aware() -> bool {
+    *TERM_SIZE_AWARE.get_or_init(|| false)
+}
+
+pub fn set_term_size_aware(enabled: bool) {
+    let _ = TERM_SIZE_AWARE.set(enabled);
+}
+
+/// Combine the fork's validated execution flags with upstream's scoring option.
+pub fn parse_execution_options(
+    args: &[String],
+) -> Result<(ExecutionMode, bool, Vec<String>), String> {
+    let term_size = args.iter().any(|arg| arg == "--term-size");
+    let remaining: Vec<_> = args
+        .iter()
+        .filter(|arg| *arg != "--term-size")
+        .cloned()
+        .collect();
+    let (mode, positionals) = parse_execution_mode_args(&remaining)?;
+    Ok((mode, term_size, positionals))
+}

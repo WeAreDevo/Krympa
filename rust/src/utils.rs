@@ -64,7 +64,21 @@ pub fn precompute_lemmas(
 
         // path to TWEE version
         let new_path = Path::new(twee_proofs_dir).join(format!("{}_twee.proof", lemma_name));
-        let proof_content = fs::read_to_string(&new_path).map_err(|e| e.to_string())?;
+        let proof_content = match fs::read_to_string(&new_path) {
+            Ok(c) => c,
+            Err(_) => {
+                // no twee proof for this lemma; register it with empty dependencies
+                let formula = load_lemma(lemmas_dir, &lemma_name)?;
+                all_lemmas.insert(
+                    lemma_name,
+                    LemmaInfo {
+                        formula,
+                        dependencies: Vec::new(),
+                    },
+                );
+                continue;
+            }
+        };
 
         // extract dependencies
         let extracted = parse_used_lemmas(&proof_content, lemmas_dir, proofs_dir)?; // Vec<(name, formula)>
