@@ -79,7 +79,10 @@ fn main() {
                 // call minimize with input file and suffixed summary
                 match minimize::try_minimize(input_file, &output_file, &summary_file) {
                     Ok(msg) => krympa::klog_info!("{}", msg),
-                    Err(err) => krympa::klog_error!("Error: {}", err),
+                    Err(err) => {
+                        krympa::klog_error!("Error: {}", err);
+                        std::process::exit(1);
+                    }
                 }
             }
         }

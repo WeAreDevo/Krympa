@@ -2,7 +2,8 @@
 """
 demo_stitch.py: Step-by-step illustration of the Stitch abstraction pipeline.
 
-Walks through a small equational proof, showing at each stage:
+Explores a small corpus-wide example (not the production per-lemma algorithm),
+showing at each stage:
   1. The redirected Vampire proof lines
   2. The equation terms extracted from the proof
   3. Variable renaming (Xn -> single letters) for Stitch
@@ -207,31 +208,16 @@ def run_demo(proof_text, lemma_bodies):
 
     # ------------------------------------------------------------------
     section("STEP 7 — Apply each pattern to lemma conjectures  (require ≥2 occurrences)")
-    print("  Sound generalisation rule (mirrors the OCaml 'abstracted' mode):\n"
-          "    1. Find every subterm structurally matching the pattern (outermost-first).\n"
-          "    2. Group by the *exact FOF string* of the matched subterm.\n"
-          "    3. The most frequent group must appear ≥ 2 times.\n"
-          "    4. Replace every occurrence of that ONE specific subterm with Y0.\n"
+    print("  Candidate rule:\n"
+          "    1. Enumerate all matching subterms, including nested matches.\n"
+          "    2. Group matches by their exact concrete FOF string.\n"
+          "    3. Replace a repeated concrete term consistently with fresh Y0.\n"
           "\n"
-          "  Why ≥2?\n"
-          "    Replacing a single occurrence makes the statement *stronger* (universally\n"
-          "    quantified over Y0 where only one specific value was needed) — it may be\n"
-          "    false, and offers no proof-shortening benefit even when provable.\n"
-          "    With ≥2 occurrences of the SAME concrete subterm, the original formula\n"
-          "    is an instance of the abstracted one (substitute Y0 = that subterm), so\n"
-          "    the abstracted is logically weaker, and the prover can treat Y0 as an\n"
-          "    atom without unfolding its internal definition.\n"
-          "\n"
-          "  Why *same concrete subterm*?\n"
-          "    Replacing two *different* matching subterms (e.g. op(X0,X0) and op(X1,X1))\n"
-          "    with the same Y0 would assert they are equal — introducing a constraint not\n"
-          "    in the original, potentially making the formula false.\n"
-          "\n"
-          "  Outermost-first matching ensures we don't double-count nested occurrences.\n"
-          "  It also means purely-flat patterns (like op(A,B)) always consume the whole\n"
-          "  term at the top level (1 occurrence each side), so they rarely trigger.\n"
-          "  Patterns with equality constraints (like op(C,C)) can fail at a parent and\n"
-          "  descend into children, finding the repeated inner subterm naturally.\n")
+          "  The abstracted statement is at least as strong as the original.\n"
+          "  If proved, substitution recovers the original equation. Requiring\n"
+          "  two occurrences is a usefulness heuristic, not a soundness condition.\n"
+          "  Distinct terms cannot share one replacement variable because a single\n"
+          "  substitution could no longer recover all the original positions.\n")
 
     for abs_idx, pattern, fo_abs in patterns:
         subsection(f"Abstraction {abs_idx}:  {to_fof(pattern)}")

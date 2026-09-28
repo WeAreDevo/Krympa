@@ -1,22 +1,12 @@
 #!/usr/bin/env python3
-"""
-run_stitch.py: Run Stitch compression on big-step lemma terms and generate
-abstracted TPTP problem files.
+"""Generate per-lemma Stitch conjectures in <output_dir>/abstracted_stitch/.
 
-Stitch is run on the conjecture bodies of the big-step lemma files, so the
-patterns it discovers are subterm shapes that recur across the things we are
-actually trying to prove.  A pattern is only applied to a lemma when it
-matches at least TWO positions in that formula, ensuring the resulting
-statement is logically weaker than the original (the original is an instance
-obtained by substituting the variable back).
+Replacing one concrete term consistently by a fresh universally quantified
+variable yields a statement at least as strong as the original. Every candidate
+must be proved independently; repeated occurrences are a usefulness heuristic.
 
-Output directories:
-  <output_dir>/abstracted_stitch_<i>/  — pattern i alone (≥2 occurrences)
-  <output_dir>/abstracted_stitch_combined/ — all applicable patterns at once
-
-Usage:
-    python run_stitch.py <big_step_dir> <output_dir>
-                        [--k K] [--max-arity N] [--iterations I]
+Usage: python run_stitch.py <big_step_dir> <output_dir>
+                           [--max-arity N] [--iterations I]
 """
 
 import sys
@@ -384,12 +374,10 @@ def match_term(tree, pattern, bindings: dict) -> bool:
 
 def collect_matching_subterms(tree, pattern, acc: list) -> None:
     """
-    Collect the FOF string of every subterm that matches pattern (outermost-first).
-    Matching is structural: once a subtree matches, its children are not visited.
+    Collect every matching subterm, including matches nested inside other matches.
     """
     if match_term(tree, pattern, {}):
         acc.append(to_fof(tree))
-        return          # outermost-first: don't descend into a matched subtree
     if isinstance(tree, str):
         return
     for child in tree[1:]:
@@ -432,7 +420,7 @@ def apply_pattern_to_formula(formula_body: str, pattern_tree, fwd: dict, rev: di
     Because we replace a single concrete subterm at all its positions, the
     original formula is an instance of the abstracted one (substitute
     replacement_var = that subterm), guaranteeing the abstracted statement is
-    logically weaker.
+    at least as strong as the original.
 
     Returns the new formula string, or None if no subterm appears ≥ 2 times.
     """
@@ -514,7 +502,7 @@ def parse_conjecture_block(content: str):
             # Collect block until ")."
             block_lines = [line]
             j = i + 1
-            while j < len(lines):
+            while not block_lines[-1].endswith(').') and j < len(lines):
                 stripped = lines[j].strip()
                 block_lines.append(stripped)
                 if stripped.endswith(').'):
@@ -524,7 +512,7 @@ def parse_conjecture_block(content: str):
             block = ' '.join(block_lines)
 
             # Extract formula: everything after ", conjecture," and before final ")."
-            start_idx = block.index(', conjecture,') + len(', conjecture,')
+            start_idx = re.search(r',\s*conjecture\s*,', block).end()
             formula_str = block[start_idx:].strip()
             if formula_str.endswith(').'):
                 formula_str = formula_str[:-2].strip()
@@ -555,7 +543,7 @@ def replace_conjecture_in_file(content: str, tptp_name: str,
         if not in_conjecture:
             if re.match(r'fof\s*\(' + re.escape(tptp_name) + r'\s*,\s*conjecture\s*,',
                         stripped):
-                in_conjecture = True
+                in_conjecture = not stripped.endswith(').')
                 continue
             result.append(line)
         else:
@@ -629,10 +617,9 @@ def abstract_single_lemma(content: str, max_arity: int, iterations: int):
 
     # Collect immediate subterms (direct children of each side's top-level symbol),
     # excluding any term string-equal to the full LHS or RHS.
-    # This prevents Stitch from abstracting a whole side to Y0
-    # (which produces unprovable fixed-point statements like Y0 = t(Y0, ...)).
+    # Whole-side replacements are filtered again after applying a pattern.
     # Stitch inspects deeper structure itself during abstraction.
-    excluded = {lhs, rhs}
+    excluded = {to_fof(parse_fof_term(side)) for side in sides}
     terms = []
     for side in sides:
         try:
@@ -674,18 +661,22 @@ def abstract_single_lemma(content: str, max_arity: int, iterations: int):
         if pattern_tree is None:
             continue
 
-        new_body = apply_pattern_to_formula(body, pattern_tree, fwd, rev)
+        used_vars = set(re.findall(r'\b[A-Z][A-Za-z0-9_]*\b', body)) | set(orig_vars)
+        fresh_index = 0
+        while f'Y{fresh_index}' in used_vars:
+            fresh_index += 1
+        fresh_var = f'Y{fresh_index}'
+        new_body = apply_pattern_to_formula(body, pattern_tree, fwd, rev, fresh_var)
         if new_body is None:
             continue
 
-        # Reject if a whole side collapsed to a bare variable (e.g. "Y0 = t(Y0,...)")
-        # — means the entire LHS or RHS was abstracted away, producing an unprovable
-        # fixed-point statement.
+        # Candidate-selection heuristic: retain compound equation sides.
+        # Bare-variable equations can be provable, but are excluded in this mode.
         new_sides = split_top_level_eq(new_body)
         if len(new_sides) == 2 and any('(' not in s.strip() for s in new_sides):
             continue
 
-        new_vars = orig_vars + ['Y0'] if 'Y0' not in orig_vars else orig_vars
+        new_vars = orig_vars + [fresh_var]
         new_content = replace_conjecture_in_file(content, tptp_name, new_vars, new_body)
         return new_content, to_fof(pattern_tree)
 
@@ -706,6 +697,13 @@ def main():
     big_step_dir = Path(args.big_step_dir)
     output_dir = Path(args.output_dir)
 
+    mode_name = "abstracted_stitch"
+    mode_dir = output_dir / mode_name
+    import shutil
+    if mode_dir.exists():
+        shutil.rmtree(mode_dir)
+    mode_dir.mkdir(parents=True, exist_ok=True)
+
     if not big_step_dir.exists():
         print(f"[WARN] Big-step directory not found: {big_step_dir}", file=sys.stderr)
         sys.exit(0)
@@ -714,13 +712,6 @@ def main():
     if not big_step_files:
         print(f"[WARN] No big-step lemma files in {big_step_dir}", file=sys.stderr)
         sys.exit(0)
-
-    mode_name = "abstracted_stitch"
-    mode_dir = output_dir / mode_name
-    import shutil
-    if mode_dir.exists():
-        shutil.rmtree(mode_dir)
-    mode_dir.mkdir(parents=True, exist_ok=True)
 
     generated = 0
     skipped = 0

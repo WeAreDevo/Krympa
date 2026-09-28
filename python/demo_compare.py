@@ -21,7 +21,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUST_DIR = REPO_ROOT / "rust"
-KRYMPA = RUST_DIR / "krympa"
+KRYMPA = RUST_DIR / "target/debug/krympa"
 OUTPUT_DIR = REPO_ROOT / "output"
 PROOFS_DIR = REPO_ROOT / "proofs"
 LEMMAS_DIR = REPO_ROOT / "lemmas"
@@ -30,7 +30,7 @@ DEFAULT_INPUT = REPO_ROOT / "benchmarks/input11/Equation650_implies_Equation448.
 SEP  = "=" * 72
 SEP2 = "-" * 72
 
-STITCH_RE = re.compile(r"^abstracted_stitch_")
+STITCH_RE = re.compile(r"^abstracted_stitch(?:_|$)")
 PROOF_FILE_RE = re.compile(r"^(.+)_lemma_(\d{4})_(vampire|twee)\.proof$")
 
 BASELINE_DISPLAY = {
@@ -97,19 +97,16 @@ def count_steps(prover: str, text: str) -> int:
     return text.count("\n")
 
 
+def proof_succeeded(text: str) -> bool:
+    """Match the explicit success statuses accepted by the Rust scorer."""
+    return any(re.search(r'(?:SZS status\s+|RESULT:\s*)(?:Theorem|Unsatisfiable)\b',
+                         line, re.IGNORECASE) for line in text.splitlines())
+
+
 def ensure_binary() -> bool:
-    """Build krympa locally if the committed binary can't run on this platform."""
-    test = subprocess.run([str(KRYMPA), "--help"], cwd=str(RUST_DIR),
-                          capture_output=True)
-    if test.returncode == 0 or b"Usage" in test.stdout:
-        return True
-    print(f"  Binary not runnable (format mismatch?). Building locally …")
-    r = subprocess.run(["bash", "build.sh"], cwd=str(RUST_DIR))
-    if r.returncode != 0:
-        print("  [ERROR] Build failed. Run `cd rust && ./build.sh` manually.")
-        return False
-    print("  Build complete.\n")
-    return True
+    """Build current sources without replacing the committed platform binaries."""
+    return subprocess.run(["cargo", "build", "--offline", "--bin", "krympa"],
+                          cwd=RUST_DIR).returncode == 0
 
 
 def run_step(step: str, input_file: Path) -> bool:
@@ -167,7 +164,7 @@ def main():
     # ------------------------------------------------------------------
     section("STEP 2 — Stitch abstraction directories produced")
 
-    stitch_dirs = sorted(LEMMAS_DIR.glob("abstracted_stitch*/"))
+    stitch_dirs = [d for d in [LEMMAS_DIR / "abstracted_stitch"] if d.is_dir()]
     if not stitch_dirs:
         print("  None — stitch_core may not be installed in .venv, or no patterns found.")
         print("  Tip: pip install stitch-core  (inside .venv)")
@@ -182,6 +179,7 @@ def main():
     # Collect all intermediate proof files (every attempted mode is kept here)
     # key: (lemma_num, mode_prefix) -> best_steps across provers
     best: dict[tuple, int] = {}
+    attempted: set[tuple] = set()
 
     for tmp_dir in (PROOFS_DIR / "vampire_tmp", PROOFS_DIR / "twee_tmp"):
         if not tmp_dir.exists():
@@ -190,16 +188,19 @@ def main():
             mode, num, prover = parse_proof_filename(f.name)
             if num is None:
                 continue
+            attempted.add((num, mode))
             text = f.read_text(errors="replace")
+            if not proof_succeeded(text):
+                continue
             steps = count_steps(prover, text)
             key = (num, mode)
             if key not in best or steps < best[key]:
                 best[key] = steps
 
     # Determine which mode prefixes exist
-    all_lemma_nums = sorted({num for num, _ in best})
-    baseline_modes = sorted({mode for _, mode in best if not STITCH_RE.match(mode or "")})
-    stitch_modes = sorted({mode for _, mode in best if STITCH_RE.match(mode or "")})
+    all_lemma_nums = sorted({num for num, _ in attempted})
+    baseline_modes = sorted({mode for _, mode in attempted if not STITCH_RE.match(mode or "")})
+    stitch_modes = sorted({mode for _, mode in attempted if STITCH_RE.match(mode or "")})
 
     if not all_lemma_nums:
         print("  No proof files found in proofs/vampire_tmp or proofs/twee_tmp.")
@@ -233,7 +234,7 @@ def main():
     stitch_only = 0
     total = len(all_lemma_nums)
 
-    display_limit = 40
+    display_limit = len(all_lemma_nums)
     for i, num in enumerate(all_lemma_nums):
         row_vals = {mode: best.get((num, mode)) for mode in display_modes}
         winner = summary_winner.get(num, "")
@@ -265,15 +266,22 @@ def main():
     # ------------------------------------------------------------------
     section("STEP 4 — Aggregate statistics")
 
-    print(f"  Lemmas in summary                 : {total}")
+    print(f"  Lemmas with saved attempts        : {total}")
+    print(f"  Lemmas in collection summary      : {len(summary_winner)}")
+    missing = set(summary_winner) - set(all_lemma_nums)
+    if missing:
+        print(f"  [WARN] Saved attempts missing for {len(missing)} summary lemmas; rerun the pipeline.")
     print(f"  Stitch mode was the winner        : {stitch_wins}  ({100*stitch_wins//max(total,1)}%)")
     if stitch_wins:
         print(f"    strictly shorter than baseline  : {stitch_strictly_better}")
         print(f"    baseline could not prove at all : {stitch_only}")
-    print(f"  Baseline won                      : {total - stitch_wins}  ({100*(total-stitch_wins)//max(total,1)}%)")
+    baseline_wins = sum(bool(mode) and not STITCH_RE.match(mode)
+                        for num, mode in summary_winner.items() if num in all_lemma_nums)
+    print(f"  Baseline won                      : {baseline_wins}")
+    print(f"  No recorded winner                : {total - stitch_wins - baseline_wins}")
 
     if stitch_modes:
-        print(f"\n  Stitch patterns found             : {len(stitch_modes)}")
+        print(f"\n  Stitch modes with saved attempts             : {len(stitch_modes)}")
         for m in stitch_modes:
             proved = sum(1 for num in all_lemma_nums if best.get((num, m)) is not None)
             print(f"    {stitch_short[m]:<28}: {proved} / {total} lemmas provable")
@@ -294,9 +302,7 @@ def main():
             print(f"    ... ({len(lines) - 25} more lines)")
     else:
         print(f"  No proof_{suffix}.out produced.")
-        print(f"  (Minimize may have found no valid candidate, or hit a known limitation:")
-        print(f"   precompute_lemmas requires a twee proof for every winner, but vampire-only"
-              f" lemmas have no twee_tmp entry.)")
+
 
     print()
 

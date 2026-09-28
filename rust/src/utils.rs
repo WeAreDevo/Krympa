@@ -1,5 +1,5 @@
-use crate::alpha_match::normalize_formula_alpha;
-use crate::prover_wrapper::proof_length;
+use crate::alpha_match::{formulas_match_with_permutations, normalize_formula_alpha};
+use crate::prover_wrapper::{proof_length, proof_succeeded};
 use regex::Regex;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -62,23 +62,31 @@ pub fn precompute_lemmas(
             .trim_end_matches("_vampire")
             .to_string();
 
-        // path to TWEE version — use empty deps for lemmas proved only by Vampire
         let new_path = Path::new(twee_proofs_dir).join(format!("{}_twee.proof", lemma_name));
-        let proof_content = match fs::read_to_string(&new_path) {
-            Ok(c) => c,
-            Err(_) => {
-                crate::klog_debug!(
-                    "[DEBUG] precompute_lemmas: no twee proof for {} — recording with empty deps",
-                    lemma_name
-                );
-                // Still register the lemma so DAG traversal can find it
-                let formula = match load_lemma(lemmas_dir, &lemma_name) {
-                    Ok(f) => f,
-                    Err(_) => continue,
-                };
-                all_lemmas.insert(lemma_name.clone(), LemmaInfo { formula, dependencies: Vec::new() });
-                continue;
+        let twee_content = match fs::read_to_string(&new_path) {
+            Ok(c) if proof_succeeded(&c) => Some(c),
+            Ok(_) => None,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(format!("Cannot read {}: {}", new_path.display(), e)),
+        };
+        let proof_content = if let Some(content) = twee_content {
+            content
+        } else {
+            let vampire_path = Path::new(proofs_dir).join(format!("{}_vampire.proof", lemma_name));
+            let dependencies =
+                vampire_dependencies(&vampire_path, lemmas_dir, proofs_dir, &lemma_name)?;
+            for (name, formula) in &dependencies {
+                lemmas.insert(name.clone(), formula.clone());
             }
+            let formula = load_lemma(lemmas_dir, &lemma_name)?;
+            all_lemmas.insert(
+                lemma_name.clone(),
+                LemmaInfo {
+                    formula,
+                    dependencies,
+                },
+            );
+            continue;
         };
 
         // extract dependencies
@@ -171,44 +179,112 @@ pub fn append_as_axiom(file_path: &str, formula: &str, lemma_name: &str) {
         .expect("Failed to append axiom");
 }
 
-/// Determine the actual lemma variant by checking the proofs folder.
-/// Supports only canonical names (small_step/big_step/abstracted).
-/// Returns the full filename including prover suffix.
+/// Names emitted for the original axioms by the OCaml/Vampire pipeline.
+pub fn is_builtin_axiom(name: &str) -> bool {
+    let suffix = name.strip_prefix("a_").or_else(|| name.strip_prefix('a'));
+    suffix
+        .map(|s| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
+        .unwrap_or(false)
+}
+
+/// Resolve a selected proof, including Stitch winners referenced as lemma_NNNN.
 pub fn select_actual_lemma(proofs_dir: &str, lemma_name: &str) -> Option<String> {
-    // built-in axioms and conjectures just return the name
-    if lemma_name.starts_with('a') || lemma_name.starts_with("conjecture_") {
+    if is_builtin_axiom(lemma_name) || lemma_name.starts_with("conjecture_") {
         return Some(lemma_name.to_string());
     }
-
-    let variants = ["small_step", "big_step", "abstracted"];
-    let suffixes = ["_twee.proof", "_vampire.proof"];
-
-    for var in &variants {
-        // determine the base name to use in the filename
-        let base_name = if lemma_name.starts_with(var) {
-            lemma_name // already has the prefix
-        } else {
-            &format!("{}_{}", var, lemma_name) // prepend the variant
-        };
-
-        for suf in &suffixes {
-            let filename_with_ext = format!("{}{}", base_name, suf);
-            let proof_path = format!("{}/{}", proofs_dir, &filename_with_ext);
-
-            if Path::new(&proof_path).exists() {
-                // strip the ".proof" extension for the returned value
-                return Some(
-                    filename_with_ext
-                        .strip_suffix(".proof")
-                        .unwrap()
-                        .to_string(),
-                );
+    let clean = strip_prover_suffix(lemma_name);
+    let candidates = if clean.starts_with("lemma_") {
+        ["small_step", "big_step", "abstracted", "abstracted_stitch"]
+            .iter()
+            .map(|mode| format!("{}_{}", mode, clean))
+            .collect::<Vec<_>>()
+    } else {
+        vec![clean]
+    };
+    for name in candidates {
+        for prover in ["twee", "vampire"] {
+            let stem = format!("{}_{}", name, prover);
+            if Path::new(proofs_dir)
+                .join(format!("{}.proof", stem))
+                .is_file()
+            {
+                return Some(stem);
             }
         }
     }
-
-    // no proof file exists
     None
+}
+
+/// Recover named premises actually present in a Vampire refutation. Never turn
+/// an unreadable or unrecognized proof into an axiom-only dependency record.
+fn vampire_dependencies(
+    proof_path: &Path,
+    lemmas_dir: &str,
+    proofs_dir: &str,
+    lemma_name: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let proof =
+        fs::read_to_string(proof_path).map_err(|e| format!("{}: {}", proof_path.display(), e))?;
+    if !proof_succeeded(&proof) {
+        return Err(format!("No successful proof for {}", lemma_name));
+    }
+    let mode = lemma_name
+        .split("_lemma_")
+        .next()
+        .ok_or("Invalid lemma name")?;
+    let subdir = match mode {
+        "big_step" => "big-step",
+        "small_step" => "small-step",
+        other => other,
+    };
+    let problem = fs::read_to_string(
+        Path::new(lemmas_dir)
+            .join(subdir)
+            .join(format!("{}.p", lemma_name)),
+    )
+    .map_err(|e| e.to_string())?;
+    let blocks =
+        Regex::new(r"(?s)fof\(\s*(\w+)\s*,\s*(axiom|lemma|conjecture)\s*,(.*?)\)\s*\.").unwrap();
+    let formulas: Vec<_> = blocks
+        .captures_iter(&problem)
+        .map(|c| (c[1].to_string(), c[2].to_string(), c[3].trim().to_string()))
+        .collect();
+    let input_re = Regex::new(r"(?m)^\s*\d+\.\s*(.*?)\s*\[input(?:\(([^)]*)\))?\]\s*$").unwrap();
+    let mut dependencies = BTreeMap::new();
+    let mut inputs = 0;
+    for cap in input_re.captures_iter(&proof) {
+        inputs += 1;
+        if cap.get(2).map(|m| m.as_str()) == Some("conjecture") {
+            continue;
+        }
+        let (name, role, formula) = formulas
+            .iter()
+            .find(|(_, role, formula)| {
+                role != "conjecture" && formulas_match_with_permutations(formula, &cap[1])
+            })
+            .or_else(|| {
+                formulas.iter().find(|(_, role, formula)| {
+                    role == "conjecture" && formulas_match_with_permutations(formula, &cap[1])
+                })
+            })
+            .ok_or_else(|| format!("Unresolved Vampire input in {}: {}", lemma_name, &cap[1]))?;
+        if role == "conjecture" {
+            continue;
+        }
+        if is_builtin_axiom(name) {
+            dependencies.insert(name.clone(), formula.clone());
+        } else {
+            let actual = select_actual_lemma(proofs_dir, name).ok_or_else(|| {
+                format!("No proof for Vampire dependency {} of {}", name, lemma_name)
+            })?;
+            let canonical = strip_prover_suffix(&actual);
+            dependencies.insert(canonical.clone(), load_lemma(lemmas_dir, &canonical)?);
+        }
+    }
+    if inputs == 0 {
+        return Err(format!("No Vampire inputs parsed for {}", lemma_name));
+    }
+    Ok(dependencies.into_iter().collect())
 }
 
 /// Extract all Twee-generated lemmas from a proof output
@@ -271,7 +347,7 @@ pub fn parse_used_lemmas(
             let name = cap[1].to_string();
             let formula = cap[2].trim().to_string();
 
-            if name.starts_with('a') {
+            if is_builtin_axiom(&name) {
                 used.push((name.clone(), formula.clone()));
                 continue;
             }
@@ -282,7 +358,7 @@ pub fn parse_used_lemmas(
                     let dep_formula = load_lemma(lemmas_dir, &clean)?;
                     used.push((clean, dep_formula));
                 } else {
-                    crate::klog_warn!("[WARN] No proof file found for {}", name);
+                    return Err(format!("No proof file found for dependency {}", name));
                 }
                 continue;
             }
@@ -306,7 +382,7 @@ pub fn parse_used_lemmas(
                     let dep_formula = load_lemma(lemmas_dir, &clean)?;
                     used.push((clean, dep_formula));
                 } else {
-                    crate::klog_warn!("[WARN] No proof file found for {}", name);
+                    return Err(format!("No proof file found for dependency {}", name));
                 }
             }
         }
@@ -317,7 +393,7 @@ pub fn parse_used_lemmas(
 }
 
 /// Load a specific lemma and extract its formula body.
-/// Supports only canonical names (small_step/big_step/abstracted).
+/// Supports canonical small_step, big_step, abstracted, and abstracted_stitch names.
 /// If lemma_name starts with "lemma_", treat it as "big_step_lemma_" for searching.
 pub fn load_lemma(lemmas_dir: &str, lemma_name: &str) -> Result<String, String> {
     let lemma_name = strip_prover_suffix(lemma_name);
@@ -364,7 +440,7 @@ pub fn load_lemma(lemmas_dir: &str, lemma_name: &str) -> Result<String, String> 
 
     // determine internal TPTP name (the name used inside the .p file)
     let internal_name = if file_lemma_name.starts_with("abstracted_stitch_") {
-        // e.g. "abstracted_stitch_0_lemma_0001" -> "conjecture_0001" (last 4 digits)
+        // e.g. "abstracted_stitch_lemma_0001" -> "conjecture_0001" (last 4 digits)
         let suffix = &file_lemma_name[file_lemma_name.len().saturating_sub(4)..];
         format!("conjecture_{}", suffix)
     } else {

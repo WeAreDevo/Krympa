@@ -64,7 +64,7 @@ pub fn build_dag(
 
     while let Some(lemma) = queue.pop_front() {
         // built-in axiom
-        if lemma.starts_with('a') {
+        if is_builtin_axiom(&lemma) {
             continue;
         }
         // conjecture dependency
@@ -79,6 +79,8 @@ pub fn build_dag(
         let lemma_info = all_lemmas
             .get(&lemma)
             .ok_or_else(|| format!("Lemma {} not found in precomputed lemmas", lemma))?;
+
+        dag.entry(lemma.clone()).or_default();
 
         // check if the lemma itself is a duplicate of a TWEE lemma
         let mut redirected = false;

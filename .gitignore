@@ -1,5 +1,6 @@
 # === Rust ===
 /target/
+/rust/target/
 **/*.rs.bk
 Cargo.lock
 
@@ -8,6 +9,7 @@ lean/.lake/
 
 # === OCaml ===
 /_build/
+/ocaml/_build/
 *.cm*
 *.o
 *.annot
@@ -69,3 +71,5 @@ lean/.lake/
 
 # === Python ===
 .venv/
+__pycache__/
+*.pyc

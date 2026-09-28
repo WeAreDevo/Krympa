@@ -50,9 +50,12 @@ pub fn collect(input_file: &str, proof_file: &str, suffix: String) {
         }
     }
 
-    // run Stitch to generate abstracted_stitch_N/ variants
-    let stitch_files = run_stitch_script(proof_file, &lemmas_dir);
-    crate::klog_info!("[INFO] Stitch generated {} lemma file(s).", stitch_files.len());
+    // run Stitch to generate abstracted_stitch/ variants
+    let stitch_files = run_stitch_script(&lemmas_dir);
+    crate::klog_info!(
+        "[INFO] Stitch generated {} lemma file(s).",
+        stitch_files.len()
+    );
     all_lemma_files.extend(stitch_files);
 
     // run provers on all lemma files
@@ -303,68 +306,104 @@ fn run_ocaml_parser(proof_file: &str, mode: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Run the Stitch Python script to generate abstracted_stitch_*/ lemma files.
-/// Returns a list of all generated .p file paths.
-fn run_stitch_script(_proof_file: &str, lemmas_dir: &str) -> Vec<String> {
-    let script_path = "../python/run_stitch.py";
-    let big_step_dir = format!("{}/big-step", lemmas_dir);
-
-    // Prefer the repo's .venv python (which has stitch_core) over the system python3.
-    let python = if std::path::Path::new("../.venv/bin/python").exists() {
+/// Generate and discover only the current per-lemma Stitch mode.
+fn run_stitch_script(lemmas_dir: &str) -> Vec<String> {
+    let python = if Path::new("../.venv/bin/python").exists() {
         "../.venv/bin/python"
     } else {
         "python3"
     };
+    run_stitch_with(python, "../python/run_stitch.py", lemmas_dir)
+}
 
-    let output = std::process::Command::new(python)
-        .arg(script_path)
-        .arg(&big_step_dir)
-        .arg(lemmas_dir)
-        .output();
-
-    match output {
-        Ok(out) => {
-            crate::klog_debug!("[DEBUG] Stitch stderr: {}", String::from_utf8_lossy(&out.stderr));
-            if !out.status.success() {
-                crate::klog_warn!(
-                    "[WARN] Stitch script exited with error: {}",
-                    String::from_utf8_lossy(&out.stderr)
-                );
-            }
-        }
-        Err(e) => {
-            crate::klog_warn!("[WARN] Failed to run Stitch script: {}", e);
+fn run_stitch_with(python: &str, script_path: &str, lemmas_dir: &str) -> Vec<String> {
+    let mode_dir = Path::new(lemmas_dir).join("abstracted_stitch");
+    // Clear before launching Python: import and argument errors must not preserve
+    // files that a later collect could mistake for this problem's abstractions.
+    if mode_dir.exists() {
+        if let Err(err) = fs::remove_dir_all(&mode_dir) {
+            crate::klog_warn!("[WARN] Cannot clear Stitch output: {}", err);
             return Vec::new();
         }
     }
-
-    // Scan for abstracted_stitch_* directories and collect .p files
-    let mut stitch_files = Vec::new();
-    let entries = match fs::read_dir(lemmas_dir) {
-        Ok(e) => e,
-        Err(_) => return Vec::new(),
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
+    let output = std::process::Command::new(python)
+        .arg(script_path)
+        .arg(Path::new(lemmas_dir).join("big-step"))
+        .arg(lemmas_dir)
+        .output();
+    match output {
+        Ok(out) if out.status.success() => {
+            crate::klog_debug!(
+                "[DEBUG] Stitch stderr: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
         }
-        let name = path.file_name().unwrap_or_default().to_string_lossy();
-        if !name.starts_with("abstracted_stitch") {
-            continue;
+        Ok(out) => {
+            crate::klog_warn!(
+                "[WARN] Stitch failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let _ = fs::remove_dir_all(&mode_dir);
+            return Vec::new();
         }
-        if let Ok(dir_entries) = fs::read_dir(&path) {
-            for file_entry in dir_entries.flatten() {
-                let file_path = file_entry.path();
-                if file_path.extension().map(|e| e == "p").unwrap_or(false) {
-                    stitch_files.push(file_path.to_string_lossy().to_string());
-                }
-            }
+        Err(err) => {
+            crate::klog_warn!("[WARN] Failed to run Stitch: {}", err);
+            return Vec::new();
         }
     }
+    let Ok(entries) = fs::read_dir(mode_dir) else {
+        return Vec::new();
+    };
+    let name_re = Regex::new(r"^abstracted_stitch_lemma_\d{4}\.p$").unwrap();
+    let mut files: Vec<_> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file() && name_re.is_match(&path.file_name().unwrap().to_string_lossy())
+        })
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    files.sort();
+    files
+}
 
-    stitch_files.sort();
-    stitch_files
+#[cfg(test)]
+mod stitch_tests {
+    use super::*;
+    #[test]
+    fn failed_or_empty_stitch_run_never_reuses_current_or_legacy_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "krympa-stitch-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        for mode in [
+            "abstracted_stitch",
+            "abstracted_stitch_0",
+            "abstracted_stitch_combined",
+        ] {
+            fs::create_dir_all(dir.join(mode)).unwrap();
+            fs::write(
+                dir.join(mode).join("abstracted_stitch_lemma_0001.p"),
+                "stale",
+            )
+            .unwrap();
+        }
+        let script = dir.join("fail.sh");
+        fs::write(&script, "mkdir -p \"$2/abstracted_stitch\"\nprintf partial > \"$2/abstracted_stitch/abstracted_stitch_lemma_0002.p\"\nexit 1\n").unwrap();
+        assert!(
+            run_stitch_with("/bin/sh", script.to_str().unwrap(), dir.to_str().unwrap()).is_empty()
+        );
+        assert!(!dir.join("abstracted_stitch").exists());
+        fs::write(&script, "exit 0\n").unwrap();
+        assert!(
+            run_stitch_with("/bin/sh", script.to_str().unwrap(), dir.to_str().unwrap()).is_empty()
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 fn normalize_axiom(s: &str) -> String {

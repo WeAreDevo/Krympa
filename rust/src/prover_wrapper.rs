@@ -132,6 +132,21 @@ pub fn proof_length(prover: &str, proof: &str) -> usize {
     }
 }
 
+/// Only explicit theorem/refutation statuses qualify as successful proofs.
+pub fn proof_succeeded(proof: &str) -> bool {
+    proof.lines().any(|line| {
+        let status = line
+            .split_once("SZS status ")
+            .or_else(|| line.split_once("RESULT:"));
+        status
+            .and_then(|(_, rest)| rest.split_whitespace().next())
+            .map(|word| {
+                word.eq_ignore_ascii_case("theorem") || word.eq_ignore_ascii_case("unsatisfiable")
+            })
+            .unwrap_or(false)
+    })
+}
+
 pub fn prove_lemmas(
     lemma_files: &[String],
     provers: &[&str],
@@ -215,22 +230,10 @@ fn prove_lemma_group(
         let twee_file = twee_dir.join(format!("{}_twee.proof", file_stem));
 
         for (prover, proof) in try_provers(lemma_file, provers, &vampire_file, &twee_file) {
-            let szs_status = proof
-                .lines()
-                .find(|l| l.contains("RESULT:") || l.contains("SZS status"))
-                .unwrap_or("")
-                .to_lowercase();
-
-            let len = if szs_status.contains("countersatisfiable")
-                || szs_status.contains("counter-satisfiable")
-                || szs_status.contains("counter_satisfiable")
-                || (szs_status.contains("satisfiable") && !szs_status.contains("unsatisfiable"))
-                || szs_status.contains("unknown")
-            {
-                1000
-            } else {
-                proof_length(&prover, &proof)
-            };
+            if !proof_succeeded(&proof) {
+                continue;
+            }
+            let len = proof_length(&prover, &proof);
 
             crate::klog_debug!("[DEBUG] {} proof length: {} lines", prover, len);
             all_proofs.push((prover, proof, len, file_stem.to_string()));

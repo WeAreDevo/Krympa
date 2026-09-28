@@ -1,119 +1,96 @@
-# Stitch Abstraction Integration — Status Report
+# Stitch integration status
 
-**Branch:** `feature/stitch_abstractions`  
-**Test problem:** `Equation650_implies_Equation448.p`  
-**Date:** 2026-05-12
+Updated 2026-09-28. Problem: `Equation650_implies_Equation448.p`.
 
----
+## Historical results verified at `0af5af4`
 
-## Background
-
-Krympa proves equational theorems by extracting intermediate lemmas from a Vampire proof, re-proving each lemma with both Vampire and Twee in three modes (big-step, small-step, abstracted), then assembling the shortest proofs into a final output. This work adds a fourth mode — **abstracted_stitch** — that uses the [Stitch](https://github.com/mlb2251/stitch) program-synthesis library to generate structurally generalised variants of each lemma, which are then offered to the same proving pipeline alongside the baseline modes.
-
----
-
-## What Was Implemented
-
-### Pipeline integration (`rust/src/core.rs`)
-
-The `collect` phase, after running the OCaml parser to produce big-step / small-step / abstracted lemma files, now calls a Python stitch script:
-
-```
-collect()
-  ├── OCaml parser → lemmas/{big-step,small-step,abstracted}/
-  └── run_stitch.py → lemmas/abstracted_stitch/          ← new
-```
-
-The Rust side discovers every `.p` file in `abstracted_stitch/` and appends them to the prover job list, so they go through the exact same Vampire + Twee pipeline as the baseline modes. No changes were needed to the proving or scoring logic — stitch lemmas participate as peers.
-
-### Per-lemma abstraction (`python/run_stitch.py`)
-
-For each big-step lemma file, the script:
-
-1. **Parses** the TPTP conjecture body into a prefix-term tree.
-2. **Builds a corpus** of the *immediate subterms* of each side of the equation — i.e., one level down from the root — excluding the full LHS and RHS themselves. This prevents Stitch from abstracting an entire side of the equation.
-3. **Encodes** each corpus term as a lambda expression with De Bruijn indices and calls `stitch_core.compress()` to find compressive patterns.
-4. **Applies** each discovered pattern back to the original formula body:
-   - Collects every subterm (at any depth) that matches the pattern.
-   - Groups matches by their concrete FOF string; finds the group with the highest count.
-   - Only proceeds if ≥ 2 occurrences of the same concrete subterm match — guaranteeing that replacing them with a fresh variable `Y0` produces a *strictly weaker* statement (the original is recoverable by substituting `Y0 = that subterm`).
-5. **Rejects** the abstraction if either side of the resulting equation is a bare variable (which would indicate that the whole LHS or RHS was abstracted away, producing an unprovable fixed-point statement like `Y0 = t(Y0, ...)`).
-6. Writes the accepted abstracted TPTP file to `lemmas/abstracted_stitch/`.
-
-### Downstream plumbing (`rust/src/utils.rs`, `rust/src/minimize.rs`)
-
-- `load_lemma` was extended to resolve `abstracted_stitch_lemma_NNNN` names to the `abstracted_stitch/` subdirectory.
-- `proof_uses_lemma` regex was updated to match the `abstracted_stitch_` prefix so the minimize phase can correctly identify stitch lemmas used in a proof chain.
-
----
-
-## Results on `Equation650_implies_Equation448.p`
-
-The problem has **81 lemmas**. The full pipeline (run_vampire → collect → shorten → minimize) ran in ~97 seconds.
-
-### Stitch abstraction yield
-
-| | Count |
-|---|---|
-| Big-step lemmas processed | 81 |
-| Lemmas with valid abstraction | **12** |
-| Rejected (no repeated subterm ≥ 2×) | 60 |
-| Rejected (whole side collapsed to variable) | 9 |
-
-### Proof length comparison (selected lemmas)
+The audit reproduced 81 extracted lemmas, 12 generated Stitch abstractions,
+and successful proofs for all 12. Collection chose 70 small-step and 11 big-step
+winners, with zero wins for either abstraction mode.
 
 | Lemma | big-step | small-step | abstracted | abstracted_stitch |
-|---|---|---|---|---|
+|---|---:|---:|---:|---:|
 | 6 | 4 | 4 | 58 | 80 |
-| 8 | 3 | 2 | 80 | **35** |
+| 8 | 3 | 2 | 80 | 35 |
 | 14 | 4 | 2 | 65 | 79 |
 | 32 | 23 | 2 | 80 | 80 |
 
-*(Full 81-lemma table: run `python python/demo_compare.py --skip-pipeline`)*
+These are Krympa inference counts, not counts of every printed proof line.
+All four published rows reproduced. The reported rejection breakdown of 60/9
+was incorrect: instrumentation found 41 lemmas without an accepted candidate
+before the bare-side filter and 28 rejected by that filter. An absent candidate
+is not proof that the original equation has no repeated subterm.
 
-### Winner breakdown
+The historical ~97-second total did not reproduce. The isolated audit run took
+291.69 seconds (4.34 initial Vampire, 79.16 collect, 8.21 shorten, 199.98 minimize)
+and produced a 27-step final proof versus 81 initial steps. It used macOS arm64,
+`stitch-core==0.1.29`, a fresh debug build, and parallel execution with debug logs.
+Timing depends on machine load, build settings, timeouts, and artifact state.
 
-| Mode | Wins |
-|---|---|
-| small-step | majority |
-| big-step | several |
-| abstracted_stitch | 0 |
+## Corrected implementation
 
----
+The fixes address stale output reuse, Stitch winner lookup and DAG handling,
+Vampire-only dependency loss, failed-output scoring, nested pattern matching,
+fresh-variable selection, and comparison reporting. `AGENTS.md` replaces the
+outdated Claude-specific guide. The historical audit remains in
+`STITCH_AUDIT.md`; current behavior is documented in `STITCH_INTEGRATION.md`.
 
-## Interpretation
+Nested matching and normalized whole-side exclusion change the generated
+candidates. With the same 81 lemma inputs, the corrected generator produces
+14 candidates: 6, 7, 8, 14, 23, 31, 32, 49, 54, 55, 56, 57, 61, and 62.
+Instrumentation finds 63 lemmas without an accepted candidate before the
+bare-side check and 4 rejected by that check. All 14 candidates receive successful
+proofs in fresh collection. Winners remain 70 small-step and 11 big-step;
+there are no Stitch winners.
 
-The stitch lemmas are provable — provers find proofs for all 12 — but their proofs are longer than the concrete baseline lemmas. This is expected: a more general statement is harder to prove from scratch.
+| Lemma | Corrected Stitch proof length |
+|---|---:|
+| 6 | 35 |
+| 7 | 69 |
+| 8 | 35 |
+| 14 | 79 |
+| 23 | 61 |
+| 31 | 80 |
+| 32 | 80 |
+| 49 | 82 |
+| 54 | 67 |
+| 55 | 98 |
+| 56 | 82 |
+| 57 | 78 |
+| 61 | 80 |
+| 62 | 50 |
 
-However, **the per-lemma proof length metric is the wrong measure for generalised lemmas**. The value proposition of abstracted_stitch lemmas is different from baseline modes:
+These measurements use saved collection proofs with explicit successful status.
+Candidate formulas can change when enumeration changes, so these scores should
+not be substituted into the historical table as if the formulas were identical.
 
-- A concrete lemma is proved once and used once.
-- A generalised lemma, if added as an axiom, could be reused across *multiple* proof steps, potentially shortening the final combined proof even if its own proof is long.
+The corrected full run completed in 297.74 seconds: 3.50 initial Vampire,
+75.63 collect, 8.20 shorten, and 210.41 minimize. It produced a 23-step final
+proof versus 81 initial steps, with arrival `small_step_lemma_0078` and departure
+`small_step_lemma_0026`. This uses the same environment as the historical audit.
+It is not a Stitch speedup: no Stitch candidate won. Dependency recovery and
+prover/search variability also affect the resulting minimized proof.
 
-The current pipeline (shorten + minimize) does not yet exploit this: it picks the winner per lemma independently and builds the final proof by concatenation. The next natural step is to evaluate whether any stitch lemma — when added as a shared axiom — allows the prover to discharge multiple later obligations in fewer steps.
+Validation: 44 Rust tests and 7 Python tests pass; all 14 generated candidates
+pass the structural substitution invariant. Forced-winner tests exercise Stitch
+lookup, dependency loading, DAG traversal, shortening, and Vampire-only support.
 
----
+## Interpretation and next experiment
 
-## Example Abstraction
+Universally replacing one concrete subterm consistently yields a statement at
+least as strong as the original. A proof of the abstraction implies the original
+by substitution. Two occurrences do not guarantee provability, and they are a
+usefulness heuristic rather than a requirement for that implication.
 
-**Lemma 8 — concrete (big-step):**
-```
-op(X2, op(op(X3, op(op(X1,X0),X0)), X2))
-  = op(op(X2, op(op(X3, op(op(X1,X0),X0)), X2)), op(X0, op(op(X1,X0),X0)))
-```
+The historical zero-win run shows no measured contribution from Stitch to the
+final proof reduction. It does not establish that abstraction is inherently
+unhelpful. The existing `shorten` phase already reuses winning abstracted
+formulas in later problems, and minimization performs dependency analysis and
+re-proving rather than simple concatenation.
 
-**Lemma 8 — abstracted_stitch:**
-```
-op(X2, op(Y0, X2))
-  = op(op(X2, op(Y0, X2)), op(X0, op(op(X1, X0), X0)))
-```
-
-The pattern `op(X3, op(op(X1, X0), X0))` appears twice in the original formula; replacing both occurrences with `Y0` yields a statement that holds for *any* `Y0` (not just that specific compound term). The original is an instance under `Y0 = op(X3, op(op(X1,X0),X0))`.
-
----
-
-## Next Steps
-
-1. **Shared-axiom evaluation**: add stitch lemmas as additional axioms when running the prover on later lemmas, measuring whether any subsequent proof becomes shorter.
-2. **Combined abstraction**: currently only the first valid pattern per lemma is used; applying multiple patterns simultaneously could yield stronger generalisations.
-3. **Cross-lemma patterns**: Stitch was originally designed for corpus-wide abstraction — running it across all big-step lemmas at once (once the assertion-failure bug in `stitch_core` is understood or avoided) could find patterns that recur *across* lemmas, not just within one.
+Next, discover abstractions across lemmas and evaluate a reuse metric tied to
+actual proof cost. Include the cost of proving shared abstractions and the cost
+of the obligations that use them. Compare against the same baseline problem
+and prover budgets. Compression size and occurrence count alone are not proof
+shortening results. This research experiment is not implemented by the current
+correctness patch.
